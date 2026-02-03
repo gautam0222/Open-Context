@@ -1,0 +1,16 @@
+# Python virtual environment
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Data files
+*.db
+*.sqlite
+data/
+
+# Models
+models/
+*.model

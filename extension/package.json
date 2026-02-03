@@ -1,0 +1,26 @@
+{
+  "name": "@open-context/extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open Context Browser Extension",
+  "scripts": {
+    "dev": "webpack --mode development --watch",
+    "build": "webpack --mode production",
+    "clean": "rimraf dist",
+    "lint": "eslint src --ext .ts --max-warnings=0"
+  },
+  "dependencies": {
+    "@open-context/shared": "*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.260",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "copy-webpack-plugin": "^12.0.2",
+    "eslint": "^8.56.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.90.1",
+    "webpack-cli": "^5.1.4"
+  }
+}

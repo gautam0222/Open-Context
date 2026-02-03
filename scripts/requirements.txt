@@ -1,0 +1,18 @@
+# Core dependencies
+python-dotenv==1.0.0
+
+# NLP and ML (will be used in Phase 1+)
+sentence-transformers==2.3.1
+chromadb==0.4.22
+nltk==3.8.1
+
+# Web scraping (Phase 1)
+beautifulsoup4==4.12.3
+readability-lxml==0.8.1
+requests==2.31.0
+
+# Named Entity Recognition (Phase 4)
+spacy==3.7.2
+
+# Utilities
+numpy==1.26.3

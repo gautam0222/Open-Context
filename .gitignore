@@ -1,0 +1,96 @@
+# ==============================
+# Dependencies
+# ==============================
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ==============================
+# Build Outputs
+# ==============================
+dist/
+build/
+.next/
+out/
+shared/dist/
+server/dist/
+*.tsbuildinfo
+
+# ==============================
+# Environment Variables
+# ==============================
+.env
+.env.local
+.env.production
+.env.development
+
+# ==============================
+# IDE
+# ==============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ==============================
+# OS
+# ==============================
+.DS_Store
+Thumbs.db
+
+# ==============================
+# Testing
+# ==============================
+coverage/
+.nyc_output/
+
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+*.egg-info/
+
+# ==============================
+# Database
+# ==============================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==============================
+# Logs
+# ==============================
+logs/
+*.log
+
+# ==============================
+# ChromaDB
+# ==============================
+chroma_data/
+
+# ==============================
+# Extension Builds
+# ==============================
+extension/dist/
+extension/build/
+
+# ==============================
+# Temp Files
+# ==============================
+*.tmp
+.temp/
+
+# ==============================
+# Future Proofing
+# ==============================
+.turbo/
+.eslintcache

@@ -1,0 +1,30 @@
+{
+  "name": "open-context",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal Knowledge Graph - Browser Extension + Web App",
+  "workspaces": [
+    "extension",
+    "app",
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev:all": "concurrently \"npm run dev -w extension\" \"npm run dev -w app\" \"npm run dev -w server\"",
+    "dev:extension": "npm run dev -w extension",
+    "dev:app": "npm run dev -w app",
+    "dev:server": "npm run dev -w server",
+    "build:all": "npm run build -w shared && npm run build -w extension && npm run build -w app && npm run build -w server",
+    "lint": "npm run lint -w shared && npm run lint -w extension && npm run lint -w app && npm run lint -w server",
+    "clean": "rimraf node_modules extension/node_modules app/node_modules server/node_modules shared/node_modules",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "prettier": "^3.2.5"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
