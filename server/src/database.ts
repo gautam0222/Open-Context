@@ -453,6 +453,14 @@ function rowToChunk(
   return chunk as unknown as ChunkRow;
 }
 
+/**
+ * Execute raw SQL (read-only use recommended)
+ */
+export function exec(sql: string, params?: any[]) {
+  return db.exec(sql, params);
+}
+
+
 export default {
   insertDocument,
   updateDocument,
@@ -470,4 +478,5 @@ export default {
   getChunkCountByDocumentId,
   getTotalChunkCount,
   deleteChunksByDocumentId,
+  exec,
 };

@@ -1,4 +1,6 @@
 import express, { Express, Request, Response } from 'express';
+import { semanticSearch } from './search';
+import { checkEmbeddingServer } from './embedder';
 import { ensureDbReady } from './database';
 import { generateEmbeddingsBatch } from './embedder';
 import cors from 'cors';
@@ -26,7 +28,11 @@ const app: Express = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors());
+// Middleware
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  credentials: true,
+}));
 app.use(express.json());
 
 // Request logging middleware
@@ -245,17 +251,41 @@ app.get('/api/stats', (_req: Request, res: Response) => {
 });
 
 // Search endpoint (placeholder for Phase 2)
-app.post('/api/search', (req: Request, res: Response) => {
-  const { query } = req.body;
+// Search endpoint (SEMANTIC SEARCH)
+app.post('/api/search', async (req: Request, res: Response) => {
+  try {
+    const { query, limit = 10 } = req.body;
 
-  console.log('🔍 Search query:', query);
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({
+        error: 'Query is required',
+      });
+    }
 
-  // TODO: Implement semantic search (Phase 2)
-  res.json({
-    results: [],
-    query,
-    total: 0,
-  });
+    console.log(`🔍 Search request: "${query}"`);
+
+    const results = await semanticSearch(query, limit);
+
+    res.json({
+      query,
+      results: results.map((r) => ({
+        chunkId: r.chunkId,
+        documentId: r.documentId,
+        documentTitle: r.documentTitle,
+        documentUrl: r.documentUrl,
+        content: r.content,
+        similarity: r.similarity,
+        chunkIndex: r.chunkIndex,
+      })),
+      total: results.length,
+    });
+  } catch (error) {
+    console.error('❌ Search error:', error);
+    res.status(500).json({
+      error: 'Search failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
 });
 
 // Get all documents (placeholder - same as captures for now)
@@ -305,6 +335,15 @@ app.use((_req: Request, res: Response) => {
 async function startServer() {
   // Wait for database to be ready
   await ensureDbReady();
+  console.log('🔍 Checking embedding server...');
+  const isEmbeddingServerRunning = await checkEmbeddingServer();
+  if (!isEmbeddingServerRunning) {
+    console.warn('⚠️  WARNING: Embedding server not running!');
+    console.warn('⚠️  Start it with: cd scripts && .\\venv\\Scripts\\activate && python embedding_server.py');
+    console.warn('⚠️  Search and capture will not work without it.');
+  } else {
+    console.log('✅ Embedding server is running');
+  }
   
   app.listen(PORT, () => {
     console.log('╔════════════════════════════════════════╗');
