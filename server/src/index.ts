@@ -12,6 +12,8 @@ import {
   getAllDocuments,
   getDocumentCount,
   getDatabaseStats,
+  deleteChunksByDocumentId,
+  deleteDocument,
 } from './database';
 import { extractContent } from './extractor';
 import { chunkText, getChunkingStats } from './chunker';
@@ -61,6 +63,10 @@ app.post('/api/capture', async (req: Request, res: Response) => {
       selectedText?: string;
       timestamp: number;
     };
+    if (!capturedData.url || !capturedData.id) {
+  return res.status(400).json({ error: "Invalid payload" });
+}
+
 
     console.log('📸 Received capture:', {
       id: capturedData.id,
@@ -176,20 +182,41 @@ app.post('/api/capture', async (req: Request, res: Response) => {
 });
 
 // Get document by ID
-app.get('/api/documents/:id', (req: Request, res: Response) => {
+// Delete document endpoint
+app.delete('/api/documents/:id', (req: Request, res: Response) => {
   try {
-    const document = getDocumentById(req.params.id);
-
+    const documentId = req.params.id;
+    
+    console.log(`🗑️ Deleting document: ${documentId}`);
+    
+    // Check if document exists
+    const document = getDocumentById(documentId);
     if (!document) {
       return res.status(404).json({
+        success: false,
         error: 'Document not found',
       });
     }
-
-    res.json({ document });
+    
+    // Delete chunks first (foreign key constraint)
+    deleteChunksByDocumentId(documentId);
+    
+    // Delete document
+    deleteDocument(documentId);
+    
+    console.log(`✅ Deleted document and its chunks: ${documentId}`);
+    
+    res.json({
+      success: true,
+      message: 'Document deleted successfully',
+      id: documentId,
+    });
   } catch (error) {
+    console.error('❌ Delete error:', error);
     res.status(500).json({
-      error: 'Failed to retrieve document',
+      success: false,
+      error: 'Failed to delete document',
+      message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 });
@@ -312,6 +339,120 @@ app.get('/api/graph', (_req: Request, res: Response) => {
     nodes: [],
     edges: [],
   });
+});
+
+// Export all documents as JSON
+app.get('/api/export/documents', (_req: Request, res: Response) => {
+  try {
+    console.log('📤 Exporting all documents...');
+    
+    const documents = getAllDocuments(10000); // Get all documents
+    
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      version: '1.0',
+      stats: getDatabaseStats(),
+      documents: documents,
+      chunks: [],
+    };
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="open-context-export.json"');
+    res.json(exportData);
+    
+    console.log(`✅ Exported ${documents.length} documents`);
+  } catch (error) {
+    console.error('❌ Export error:', error);
+    res.status(500).json({
+      error: 'Failed to export documents',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Export single document as Markdown
+app.get('/api/export/documents/:id/markdown', (req: Request, res: Response) => {
+  try {
+    const document = getDocumentById(req.params.id);
+    
+    if (!document) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    
+    // Create Markdown content
+    const markdown = `# ${document.title || 'Untitled'}
+
+**URL:** ${document.url}
+${document.author ? `**Author:** ${document.author}\n` : ''}${document.site_name ? `**Source:** ${document.site_name}\n` : ''}**Captured:** ${new Date(document.created_at).toLocaleString()}
+${document.word_count ? `**Word Count:** ${document.word_count}\n` : ''}
+---
+
+${document.content || 'No content available'}
+`;
+    
+    res.setHeader('Content-Type', 'text/markdown');
+    res.setHeader('Content-Disposition', `attachment; filename="${document.id}.md"`);
+    res.send(markdown);
+    
+    console.log(`✅ Exported document ${document.id} as Markdown`);
+  } catch (error) {
+    console.error('❌ Export error:', error);
+    res.status(500).json({
+      error: 'Failed to export document',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Export statistics report
+app.get('/api/export/stats', (_req: Request, res: Response) => {
+  try {
+    const stats = getDatabaseStats();
+    const documents = getAllDocuments(10000);
+    
+    // Calculate additional stats
+    const domains = new Map<string, number>();
+    const byMonth = new Map<string, number>();
+    
+    documents.forEach((doc) => {
+      // Domain stats
+      try {
+        const url = new URL(doc.url);
+        const domain = url.hostname.replace('www.', '');
+        domains.set(domain, (domains.get(domain) || 0) + 1);
+      } catch {}
+      
+      // Monthly stats
+      const date = new Date(doc.created_at);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      byMonth.set(monthKey, (byMonth.get(monthKey) || 0) + 1);
+    });
+    
+    const report = {
+      generatedAt: new Date().toISOString(),
+      overview: stats,
+      topDomains: Array.from(domains.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([domain, count]) => ({ domain, count })),
+      capturesByMonth: Array.from(byMonth.entries())
+        .sort()
+        .map(([month, count]) => ({ month, count })),
+      totalDomains: domains.size,
+    };
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="stats-report.json"');
+    res.json(report);
+    
+    console.log('✅ Exported statistics report');
+  } catch (error) {
+    console.error('❌ Export error:', error);
+    res.status(500).json({
+      error: 'Failed to export stats',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
 });
 
 // Error handling middleware
