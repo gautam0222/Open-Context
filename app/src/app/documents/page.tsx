@@ -1,7 +1,8 @@
 'use client';
-
+import ExportMenu from '@/components/ExportMenu';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import toast from 'react-hot-toast';
 
 interface Document {
   id: string;
@@ -26,6 +27,7 @@ export default function DocumentsPage() {
   const [loading, setLoading] = useState(true);
   const [searchFilter, setSearchFilter] = useState('');
   const [sortBy, setSortBy] = useState<'date' | 'title' | 'words'>('date');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     loadDocuments();
@@ -33,12 +35,15 @@ export default function DocumentsPage() {
   }, []);
 
   const loadDocuments = async () => {
+    setLoading(true);
     try {
       const response = await fetch('http://localhost:3001/api/captures');
       const data = await response.json();
       setDocuments(data.documents || []);
+      toast.success('Documents loaded!');
     } catch (error) {
       console.error('Failed to load documents:', error);
+      toast.error('Failed to load documents');
     } finally {
       setLoading(false);
     }
@@ -51,6 +56,37 @@ export default function DocumentsPage() {
       setStats(data);
     } catch (error) {
       console.error('Failed to load stats:', error);
+    }
+  };
+
+  const handleDelete = async (doc: Document) => {
+    if (!confirm(`Delete "${doc.title}"?\n\nThis will permanently delete the document and all its chunks.`)) {
+      return;
+    }
+
+    setDeletingId(doc.id);
+    const deletePromise = fetch(`http://localhost:3001/api/documents/${doc.id}`, {
+      method: 'DELETE',
+    });
+
+    toast.promise(deletePromise, {
+      loading: 'Deleting...',
+      success: 'Document deleted!',
+      error: 'Failed to delete',
+    });
+
+    try {
+      const response = await deletePromise;
+      if (response.ok) {
+        // Remove from UI
+        setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+        // Reload stats
+        loadStats();
+      }
+    } catch (error) {
+      console.error('Delete failed:', error);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -111,12 +147,25 @@ export default function DocumentsPage() {
                 )}
               </p>
             </div>
-            <Link
-              href="/"
-              className="px-6 py-3 bg-white/20 hover:bg-white/30 text-white rounded-lg font-semibold transition"
-            >
-              ← Home
-            </Link>
+            <div className="flex gap-3">
+  <ExportMenu />
+  <button
+    onClick={() => {
+      loadDocuments();
+      loadStats();
+    }}
+    className="px-4 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg font-semibold transition"
+    disabled={loading}
+  >
+    🔄 Refresh
+  </button>
+  <Link
+    href="/"
+    className="px-6 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg font-semibold transition"
+  >
+    ← Home
+  </Link>
+</div>
           </div>
         </div>
       </div>
@@ -153,7 +202,7 @@ export default function DocumentsPage() {
         {/* Loading State */}
         {loading && (
           <div className="text-center text-white py-12">
-            <div className="text-6xl mb-4">⏳</div>
+            <div className="text-6xl mb-4 animate-pulse">⏳</div>
             <p className="text-xl">Loading documents...</p>
           </div>
         )}
@@ -163,9 +212,7 @@ export default function DocumentsPage() {
           <div className="text-center text-white py-12">
             <div className="text-6xl mb-4">📭</div>
             <p className="text-xl mb-2">No documents yet</p>
-            <p className="opacity-75">
-              Start capturing pages using the browser extension!
-            </p>
+            <p className="opacity-75">Start capturing pages using the browser extension!</p>
           </div>
         )}
 
@@ -193,36 +240,44 @@ export default function DocumentsPage() {
 
                   {/* Excerpt */}
                   {doc.excerpt && (
-                    <p className="text-sm text-gray-600 mb-4 line-clamp-3">
-                      {doc.excerpt}
-                    </p>
+                    <p className="text-sm text-gray-600 mb-4 line-clamp-3">{doc.excerpt}</p>
                   )}
 
                   {/* Metadata */}
                   <div className="flex items-center justify-between text-xs text-gray-500 mb-4">
                     {doc.author && <span>✍️ {doc.author}</span>}
-                    {doc.word_count && (
-                      <span>{doc.word_count.toLocaleString()} words</span>
-                    )}
+                    {doc.word_count && <span>{doc.word_count.toLocaleString()} words</span>}
                   </div>
 
                   {/* Actions */}
-                  <div className="flex gap-2">
-                    <a
-                      href={doc.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex-1 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white text-center rounded-lg font-medium transition text-sm"
-                    >
-                      🔗 Open
-                    </a>
-                    <button
-                      className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg font-medium transition text-sm"
-                      title="More options"
-                    >
-                      ⋯
-                    </button>
-                  </div>
+                  {/* Actions */}
+<div className="flex gap-2">
+  <a
+    href={doc.url}
+    target="_blank"
+    rel="noopener noreferrer"
+    className="flex-1 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white text-center rounded-lg font-medium transition text-sm"
+  >
+    🔗 Open
+  </a>
+  <a
+    href={`http://localhost:3001/api/export/documents/${doc.id}/markdown`}
+    download
+    className="px-4 py-2 bg-green-100 hover:bg-green-200 text-green-700 rounded-lg font-medium transition text-sm"
+    title="Download as Markdown"
+    onClick={() => toast.success('Downloading...')}
+  >
+    📄
+  </a>
+  <button
+    onClick={() => handleDelete(doc)}
+    disabled={deletingId === doc.id}
+    className="px-4 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg font-medium transition text-sm disabled:opacity-50"
+    title="Delete document"
+  >
+    {deletingId === doc.id ? '⏳' : '🗑️'}
+  </button>
+</div>
                 </div>
               </div>
             ))}

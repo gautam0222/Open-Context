@@ -1,4 +1,5 @@
 'use client';
+import toast from 'react-hot-toast';
 
 import { useState } from 'react';
 
@@ -19,30 +20,36 @@ export default function SearchPage() {
   const [searchTime, setSearchTime] = useState(0);
 
   const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!query.trim()) return;
+  e.preventDefault();
+  
+  if (!query.trim()) return;
 
-    setLoading(true);
-    const startTime = Date.now();
+  setLoading(true);
+  const startTime = Date.now();
 
-    try {
-      const response = await fetch('http://localhost:3001/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, limit: 10 }),
-      });
+  const searchPromise = fetch('http://localhost:3001/api/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, limit: 10 }),
+  }).then((res) => res.json());
 
-      const data = await response.json();
-      setResults(data.results || []);
-      setSearchTime(Date.now() - startTime);
-    } catch (error) {
-      console.error('Search failed:', error);
-      alert('Search failed. Make sure the server is running!');
-    } finally {
-      setLoading(false);
-    }
-  };
+  toast.promise(searchPromise, {
+    loading: 'Searching...',
+    success: (data) => `Found ${data.results?.length || 0} results!`,
+    error: 'Search failed',
+  });
+
+  try {
+    const data = await searchPromise;
+    setResults(data.results || []);
+    setSearchTime(Date.now() - startTime);
+  } catch (error) {
+    console.error('Search failed:', error);
+    setResults([]);
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-primary-500 to-secondary-500 p-8">
