@@ -1,5 +1,6 @@
 'use client';
 import ExportMenu from '@/components/ExportMenu';
+import { DocumentCardSkeleton } from '@/components/LoadingSkeleton';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -201,11 +202,12 @@ export default function DocumentsPage() {
 
         {/* Loading State */}
         {loading && (
-          <div className="text-center text-white py-12">
-            <div className="text-6xl mb-4 animate-pulse">⏳</div>
-            <p className="text-xl">Loading documents...</p>
-          </div>
-        )}
+  <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+    {[1, 2, 3, 4, 5, 6].map((i) => (
+      <DocumentCardSkeleton key={i} />
+    ))}
+  </div>
+)}
 
         {/* Empty State */}
         {!loading && documents.length === 0 && (

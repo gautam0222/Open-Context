@@ -74,54 +74,46 @@ export default function Home() {
 
           {/* Quick Stats */}
           {stats && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-4xl mx-auto mb-8">
-              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
-                <div className="text-3xl md:text-4xl font-bold mb-1">
-                  {stats.totalDocuments}
-                </div>
-                <div className="text-sm opacity-80">Documents</div>
-              </div>
-              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
-                <div className="text-3xl md:text-4xl font-bold mb-1">
-                  {(stats.totalWords / 1000).toFixed(1)}K
-                </div>
-                <div className="text-sm opacity-80">Words</div>
-              </div>
-              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
-                <div className="text-3xl md:text-4xl font-bold mb-1">
-                  {stats.totalChunks}
-                </div>
-                <div className="text-sm opacity-80">Chunks</div>
-              </div>
-              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
-                <div className="text-3xl md:text-4xl font-bold mb-1">
-                  {stats.averageWords}
-                </div>
-                <div className="text-sm opacity-80">Avg Words</div>
-              </div>
-            </div>
-          )}
+  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-4xl mx-auto mb-8">
+    {[
+      { value: stats.totalDocuments, label: 'Documents', icon: '📚' },
+      { value: `${(stats.totalWords / 1000).toFixed(1)}K`, label: 'Words', icon: '📝' },
+      { value: stats.totalChunks, label: 'Chunks', icon: '🧩' },
+      { value: stats.averageWords, label: 'Avg Words', icon: '📊' },
+    ].map((stat, index) => (
+      <div
+        key={stat.label}
+        className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20 hover-lift animate-scale-in"
+        style={{ animationDelay: `${index * 0.1}s` }}
+      >
+        <div className="text-2xl mb-2">{stat.icon}</div>
+        <div className="text-3xl md:text-4xl font-bold mb-1">{stat.value}</div>
+        <div className="text-sm opacity-80">{stat.label}</div>
+      </div>
+    ))}
+  </div>
+)}
 
           {/* Action Buttons */}
           <div className="flex flex-col sm:flex-row gap-4 justify-center max-w-2xl mx-auto">
             <Link
-              href="/search"
-              className="px-8 py-4 bg-white text-primary-600 rounded-xl font-bold text-lg hover:bg-opacity-90 transition shadow-xl hover:shadow-2xl hover:-translate-y-1 transform"
-            >
-              🔍 Semantic Search
-            </Link>
-            <Link
-              href="/documents"
-              className="px-8 py-4 bg-white/20 backdrop-blur text-white rounded-xl font-bold text-lg hover:bg-white/30 transition border border-white/30 hover:shadow-xl hover:-translate-y-1 transform"
-            >
-              📚 Browse Library
-            </Link>
-            <Link
-              href="/graph"
-              className="px-8 py-4 bg-white/20 backdrop-blur text-white rounded-xl font-bold text-lg hover:bg-white/30 transition border border-white/30 hover:shadow-xl hover:-translate-y-1 transform"
-            >
-              🕸️ Knowledge Graph
-            </Link>
+    href="/search"
+    className="px-8 py-4 bg-white text-primary-600 rounded-xl font-bold text-lg hover:bg-opacity-90 transition shadow-xl hover:shadow-2xl hover:-translate-y-1 transform"
+  >
+    🔍 Semantic Search
+  </Link>
+  <Link
+    href="/documents"
+    className="px-8 py-4 bg-white/20 backdrop-blur text-white rounded-xl font-bold text-lg hover:bg-white/30 transition border border-white/30 hover:shadow-xl hover:-translate-y-1 transform"
+  >
+    📚 Browse Library
+  </Link>
+  <Link
+    href="/settings"
+    className="px-8 py-4 bg-white/20 backdrop-blur text-white rounded-xl font-bold text-lg hover:bg-white/30 transition border border-white/30 hover:shadow-xl hover:-translate-y-1 transform"
+  >
+    ⚙️ Settings
+  </Link>
           </div>
         </div>
 

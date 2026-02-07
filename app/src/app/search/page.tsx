@@ -1,6 +1,6 @@
 'use client';
 import toast from 'react-hot-toast';
-
+import { SearchResultSkeleton } from '@/components/LoadingSkeleton';
 import { useState } from 'react';
 
 interface SearchResult {
@@ -26,8 +26,8 @@ export default function SearchPage() {
 
   setLoading(true);
   const startTime = Date.now();
-
-  const searchPromise = fetch('http://localhost:3001/api/search', {
+  const API_BASE = process.env.NEXT_PUBLIC_API_URL;
+  const searchPromise = fetch(`${API_BASE}/api/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, limit: 10 }),
@@ -89,10 +89,11 @@ export default function SearchPage() {
             </div>
 
             {results.map((result, index) => (
-              <div
-                key={result.chunkId}
-                className="bg-white rounded-xl p-6 shadow-lg hover:shadow-xl transition"
-              >
+  <div
+    key={result.chunkId}
+    className="bg-white rounded-xl p-6 shadow-lg hover:shadow-2xl transition-all hover:-translate-y-1 animate-slide-up"
+    style={{ animationDelay: `${index * 0.1}s` }}
+  >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex-1">
                     <h3 className="text-lg font-semibold text-gray-900 mb-1">
@@ -129,13 +130,14 @@ export default function SearchPage() {
           </div>
         )}
 
-        {!loading && results.length === 0 && query && (
-          <div className="text-center text-white">
-            <div className="text-6xl mb-4">🤷</div>
-            <p className="text-xl">No results found for &quot;{query}&quot;</p>
-            <p className="mt-2 opacity-75">Try a different search term</p>
-          </div>
-        )}
+        {/* Loading State */}
+{loading && (
+  <div className="space-y-4">
+    {[1, 2, 3].map((i) => (
+      <SearchResultSkeleton key={i} />
+    ))}
+  </div>
+)}
 
         <div className="mt-8 text-center">
           <a href="/" className="text-white hover:underline">
