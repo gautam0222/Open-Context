@@ -1,19 +1,24 @@
 import express, { Express, Request, Response } from 'express';
 import { semanticSearch } from './search';
 import { checkEmbeddingServer } from './embedder';
-import { ensureDbReady } from './database';
+import { ensureDbReady, getTotalChunkCount } from './database';
 import { generateEmbeddingsBatch } from './embedder';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { db } from './database';
 import {
   insertDocument,
-  getDocumentByUrl,
+  updateDocument,
   getDocumentById,
+  getDocumentByUrl,
   getAllDocuments,
   getDocumentCount,
-  getDatabaseStats,
-  deleteChunksByDocumentId,
   deleteDocument,
+  getDatabaseStats,
+  insertChunk,
+  insertChunks,
+  getChunksByDocumentId,
+  deleteChunksByDocumentId,
   insertHighlight,
   getHighlightsByDocumentId,
   deleteHighlight,
@@ -21,15 +26,20 @@ import {
   getNotesByDocumentId,
   updateNote,
   deleteNote,
+  insertEntity,
+  getEntityByName,
+  getAllEntities,
+  incrementEntityFrequency,
+  insertDocumentEntity,
+  getEntityDocuments,
+  insertEntityRelationship,
+  getEntityRelationships,
+  getAllEntityRelationships,
 } from './database';
 import { generateId } from '@open-context/shared';
 import { extractContent } from './extractor';
 import { chunkText, getChunkingStats } from './chunker';
-import {
-  insertChunks,
-  getChunksByDocumentId,
-  getTotalChunkCount,
-} from './database';
+import { extractEntities, findCoOccurrences } from './nlp';
 
 // Load environment variables
 dotenv.config();
@@ -167,6 +177,67 @@ app.post('/api/capture', async (req: Request, res: Response) => {
       console.log(`📊 Chunk stats: avg ${chunkStats.avgCharCount} chars, range ${chunkStats.minCharCount}-${chunkStats.maxCharCount}`);
     }
 
+// After chunks are saved, add entity extraction
+console.log('🧠 Extracting entities...');
+const entities = extractEntities(extraction.data.textContent || '');
+console.log(`📊 Found ${entities.length} entities`);
+
+// Save entities to database
+const entityMap: Map<string, string> = new Map(); // text -> entity_id
+
+for (const entity of entities) {
+  // Check if entity already exists
+  let existingEntity = getEntityByName(entity.text);
+  
+  if (existingEntity) {
+    // Increment frequency
+    incrementEntityFrequency(existingEntity.id);
+    entityMap.set(entity.text.toLowerCase(), existingEntity.id);
+  } else {
+    // Create new entity
+    const entityId = generateId('entity');
+    insertEntity({
+      id: entityId,
+      name: entity.text,
+      type: entity.type,
+      frequency: entity.frequency,
+    });
+    entityMap.set(entity.text.toLowerCase(), entityId);
+  }
+}
+
+// Link entities to document
+for (const [entityText, entityId] of entityMap.entries()) {
+  const entity = entities.find((e: { text: string; }) => e.text.toLowerCase() === entityText);
+  if (entity) {
+    insertDocumentEntity({
+      id: generateId('doc_entity'),
+      document_id: capturedData.id,
+      entity_id: entityId,
+      frequency: entity.frequency,
+    });
+  }
+}
+
+// Find co-occurrences and create relationships
+const coOccurrences = findCoOccurrences(entities, extraction.data.textContent || '');
+for (const coOcc of coOccurrences) {
+  const entity1Id = entityMap.get(coOcc.entity1);
+  const entity2Id = entityMap.get(coOcc.entity2);
+  
+  if (entity1Id && entity2Id && entity1Id !== entity2Id) {
+    insertEntityRelationship({
+      id: generateId('rel'),
+      entity_a_id: entity1Id,
+      entity_b_id: entity2Id,
+      relationship_type: 'co_occurs',
+      strength: coOcc.strength,
+    });
+  }
+}
+
+console.log(`✅ Extracted and linked ${entityMap.size} entities`);
+
     const stats = getDatabaseStats();
     const totalChunks = getTotalChunkCount();
 
@@ -184,6 +255,99 @@ app.post('/api/capture', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: 'Failed to capture content',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Get graph data (nodes and edges)
+app.get('/api/graph', (_req: Request, res: Response) => {
+  try {
+    console.log('🕸️ Building knowledge graph...');
+    
+    // Get all entities (nodes)
+    const entities = getAllEntities(500);
+    
+    // Get all relationships (edges)
+    const relationships = getAllEntityRelationships(1000);
+    
+    // Get all documents
+    const documents = getAllDocuments(500);
+    
+    // Helper function for node colors
+    const getColorByType = (type: string): string => {
+      const colors: Record<string, string> = {
+        person: '#3b82f6',
+        place: '#10b981',
+        organization: '#8b5cf6',
+        topic: '#f59e0b',
+        concept: '#ec4899',
+        document: '#6b7280',
+      };
+      return colors[type] || '#9ca3af';
+    };
+    
+    // Build graph structure
+    const nodes = [
+      // Entity nodes
+      ...entities.map(entity => ({
+        id: entity.id,
+        label: entity.name,
+        type: entity.type,
+        size: Math.log(entity.frequency + 1) * 3,
+        color: getColorByType(entity.type),
+      })),
+      // Document nodes
+      ...documents.map(doc => ({
+        id: doc.id,
+        label: doc.title || 'Untitled',
+        type: 'document',
+        size: Math.log((doc.word_count || 100) / 100) * 2,
+        color: '#9ca3af',
+      })),
+    ];
+    
+    const edges = [
+      // Entity relationships
+      ...relationships.map((rel, idx) => ({
+        id: `edge-rel-${idx}`,
+        source: rel.entity_a_id,
+        target: rel.entity_b_id,
+        size: rel.strength * 2,
+        color: '#e5e7eb',
+      })),
+    ];
+    
+    // Add document-entity edges
+    const allDocEntitiesResult = db.exec('SELECT * FROM document_entities');
+    if (allDocEntitiesResult.length > 0) {
+      allDocEntitiesResult[0].values.forEach((row, idx) => {
+        edges.push({
+          id: `edge-doc-${idx}`,
+          source: String(row[1]), // document_id
+          target: String(row[2]), // entity_id
+          size: 1,
+          color: '#f3f4f6',
+        });
+      });
+    }
+    
+    console.log(`✅ Graph: ${nodes.length} nodes, ${edges.length} edges`);
+    
+    res.json({
+      nodes,
+      edges,
+      stats: {
+        totalNodes: nodes.length,
+        totalEdges: edges.length,
+        entities: entities.length,
+        documents: documents.length,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Graph error:', error);
+    res.status(500).json({
+      error: 'Failed to build graph',
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
@@ -405,6 +569,120 @@ app.get('/api/documents/:id/highlights', (req: Request, res: Response) => {
   }
 });
 
+// Re-process all documents to extract entities
+// Re-process all documents to extract entities (async, non-blocking)
+app.post('/api/documents/reprocess', async (_req: Request, res: Response) => {
+  try {
+    // Send immediate response
+    res.json({
+      success: true,
+      message: 'Re-processing started in background',
+    });
+
+    // Process in background
+    setImmediate(async () => {
+      console.log('🔄 Re-processing all documents in background...');
+      
+      const documents = getAllDocuments(1000);
+      let processedCount = 0;
+      let entityCount = 0;
+      
+      for (const doc of documents) {
+        if (!doc.content) continue;
+        
+        console.log(`📄 Processing ${processedCount + 1}/${documents.length}: ${doc.title?.substring(0, 50)}...`);
+        
+        try {
+          // Extract entities
+          const entities = extractEntities(doc.content);
+          
+          if (entities.length === 0) {
+            console.log(`   ⚠️ No entities found`);
+            processedCount++;
+            continue;
+          }
+          
+          // Save entities to database
+          const entityMap: Map<string, string> = new Map();
+          
+          for (const entity of entities) {
+            let existingEntity = getEntityByName(entity.text);
+            
+            if (existingEntity) {
+              incrementEntityFrequency(existingEntity.id);
+              entityMap.set(entity.text.toLowerCase(), existingEntity.id);
+            } else {
+              const entityId = generateId('entity');
+              insertEntity({
+                id: entityId,
+                name: entity.text,
+                type: entity.type,
+                frequency: entity.frequency,
+              });
+              entityMap.set(entity.text.toLowerCase(), entityId);
+              entityCount++;
+            }
+          }
+          
+          // Link entities to document
+          for (const [entityText, entityId] of entityMap.entries()) {
+            const entity = entities.find(e => e.text.toLowerCase() === entityText);
+            if (entity) {
+              try {
+                insertDocumentEntity({
+                  id: generateId('doc_entity'),
+                  document_id: doc.id,
+                  entity_id: entityId,
+                  frequency: entity.frequency,
+                });
+              } catch (err) {
+                // Skip if already exists
+              }
+            }
+          }
+          
+          // Find co-occurrences (limit to avoid too many)
+          const coOccurrences = findCoOccurrences(entities, doc.content).slice(0, 20);
+          for (const coOcc of coOccurrences) {
+            const entity1Id = entityMap.get(coOcc.entity1);
+            const entity2Id = entityMap.get(coOcc.entity2);
+            
+            if (entity1Id && entity2Id && entity1Id !== entity2Id) {
+              try {
+                insertEntityRelationship({
+                  id: generateId('rel'),
+                  entity_a_id: entity1Id,
+                  entity_b_id: entity2Id,
+                  relationship_type: 'co_occurs',
+                  strength: coOcc.strength,
+                });
+              } catch (err) {
+                // Skip if already exists
+              }
+            }
+          }
+          
+          console.log(`   ✅ Extracted ${entityMap.size} entities`);
+          processedCount++;
+          
+        } catch (error) {
+          console.error(`   ❌ Error processing document:`, error);
+          processedCount++;
+        }
+      }
+      
+      console.log(`\n🎉 COMPLETE! Re-processed ${processedCount} documents, extracted ${entityCount} new entities\n`);
+    });
+    
+  } catch (error) {
+    console.error('❌ Re-processing error:', error);
+    res.status(500).json({
+      error: 'Failed to start re-processing',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 app.post('/api/documents/:id/highlights', (req: Request, res: Response) => {
   try {
     const { text, color, position_start, position_end } = req.body;
@@ -548,14 +826,162 @@ app.get('/api/documents', (_req: Request, res: Response) => {
 });
 
 // Get graph data (placeholder for Phase 3)
-app.get('/api/graph', (_req: Request, res: Response) => {
-  // TODO: Implement graph data retrieval (Phase 3)
-  res.json({
-    nodes: [],
-    edges: [],
-  });
+// Get graph data (nodes and edges) - OPTIMIZED
+app.get('/api/graph', (req: Request, res: Response) => {
+  try {
+    console.log('🕸️ Building knowledge graph...');
+    
+    // Get top entities only (limit to prevent overload)
+    const entities = getAllEntities(100); // Reduced from 500
+    
+    // Get top relationships only
+    const relationships = getAllEntityRelationships(200); // Reduced from 1000
+    
+    // Get recent documents only
+    const documents = getAllDocuments(50); // Reduced from 500
+    
+    // Helper function for node colors
+    const getColorByType = (type: string): string => {
+      const colors: Record<string, string> = {
+        person: '#3b82f6',
+        place: '#10b981',
+        organization: '#8b5cf6',
+        topic: '#f59e0b',
+        concept: '#ec4899',
+        document: '#6b7280',
+      };
+      return colors[type] || '#9ca3af';
+    };
+    
+    // Build graph structure
+    const nodes = [
+      // Entity nodes (only high-frequency ones)
+      ...entities
+        .filter(e => e.frequency >= 2) // Only entities mentioned 2+ times
+        .map(entity => ({
+          id: entity.id,
+          label: entity.name,
+          type: entity.type,
+          size: Math.min(Math.log(entity.frequency + 1) * 5, 20), // Cap size
+          color: getColorByType(entity.type),
+        })),
+      // Document nodes (smaller size)
+      ...documents.map(doc => ({
+        id: doc.id,
+        label: (doc.title || 'Untitled').substring(0, 50), // Truncate long titles
+        type: 'document',
+        size: 5, // Fixed smaller size for documents
+        color: '#9ca3af',
+      })),
+    ];
+    
+    const edges = [
+      // Entity relationships (only strong ones)
+      ...relationships
+        .filter(rel => rel.strength >= 0.2) // Only strong relationships
+        .map((rel, idx) => ({
+          id: `edge-rel-${idx}`,
+          source: rel.entity_a_id,
+          target: rel.entity_b_id,
+          size: rel.strength * 2,
+          color: '#e5e7eb',
+        })),
+    ];
+    
+    // Add document-entity edges (limit to top entities per document)
+    const allDocEntitiesResult = db.exec(
+      'SELECT document_id, entity_id FROM document_entities ORDER BY frequency DESC LIMIT 500'
+    );
+    
+    if (allDocEntitiesResult.length > 0) {
+      allDocEntitiesResult[0].values.forEach((row, idx) => {
+        const docId = String(row[0]);
+        const entityId = String(row[1]);
+        
+        // Only add edge if both nodes exist
+        if (nodes.some(n => n.id === docId) && nodes.some(n => n.id === entityId)) {
+          edges.push({
+            id: `edge-doc-${idx}`,
+            source: docId,
+            target: entityId,
+            size: 0.5,
+            color: '#f3f4f6',
+          });
+        }
+      });
+    }
+    
+    console.log(`✅ Graph: ${nodes.length} nodes, ${edges.length} edges`);
+    
+    res.json({
+      nodes,
+      edges,
+      stats: {
+        totalNodes: nodes.length,
+        totalEdges: edges.length,
+        entities: entities.length,
+        documents: documents.length,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Graph error:', error);
+    res.status(500).json({
+      error: 'Failed to build graph',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
 });
 
+// Get entity details with related documents
+app.get('/api/entities/:id', (req: Request, res: Response) => {
+  try {
+    const entityId = req.params.id;
+    
+    // Get entity
+    const entitiesResult = db.exec('SELECT * FROM entities WHERE id = ?', [entityId]);
+    if (entitiesResult.length === 0 || entitiesResult[0].values.length === 0) {
+      return res.status(404).json({ error: 'Entity not found' });
+    }
+    
+    const entityRow = entitiesResult[0].values[0];
+    const entity: Record<string, any> = {};
+    entitiesResult[0].columns.forEach((col, i) => {
+      entity[col] = entityRow[i];
+    });
+    
+    // Get related documents
+    const docEntities = getEntityDocuments(entityId);
+    const relatedDocs = docEntities.map(de => {
+      const doc = getDocumentById(de.document_id);
+      return doc ? { ...doc, relevance: de.frequency } : null;
+    }).filter((doc): doc is NonNullable<typeof doc> => doc !== null);
+    
+    // Get related entities
+    const relationships = getEntityRelationships(entityId);
+    const relatedEntities = relationships.map(rel => {
+      const relatedId = rel.entity_a_id === entityId ? rel.entity_b_id : rel.entity_a_id;
+      const relEntitiesResult = db.exec('SELECT * FROM entities WHERE id = ?', [relatedId]);
+      
+      if (relEntitiesResult.length === 0) return null;
+      
+      const relEntity: Record<string, any> = {};
+      relEntitiesResult[0].columns.forEach((col, i) => {
+        relEntity[col] = relEntitiesResult[0].values[0][i];
+      });
+      
+      return { ...relEntity, strength: rel.strength };
+    }).filter((entity): entity is NonNullable<typeof entity> => entity !== null);
+    
+    res.json({
+      entity,
+      relatedDocuments: relatedDocs,
+      relatedEntities,
+    });
+  } catch (error) {
+    console.error('❌ Error fetching entity:', error);
+    res.status(500).json({ error: 'Failed to fetch entity' });
+  }
+});
 // Export all documents as JSON
 app.get('/api/export/documents', (_req: Request, res: Response) => {
   try {

@@ -93,6 +93,54 @@ db.run(`
   )
 `);
 
+// Entities table (concepts extracted from documents)
+db.run(`
+  CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    frequency INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL
+  )
+`);
+
+// Document-Entity relationships
+db.run(`
+  CREATE TABLE IF NOT EXISTS document_entities (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    frequency INTEGER DEFAULT 1,
+    context TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    UNIQUE(document_id, entity_id)
+  )
+`);
+
+// Entity relationships (concept A relates to concept B)
+db.run(`
+  CREATE TABLE IF NOT EXISTS entity_relationships (
+    id TEXT PRIMARY KEY,
+    entity_a_id TEXT NOT NULL,
+    entity_b_id TEXT NOT NULL,
+    relationship_type TEXT,
+    strength REAL DEFAULT 0.5,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(entity_a_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_b_id) REFERENCES entities(id) ON DELETE CASCADE,
+    UNIQUE(entity_a_id, entity_b_id)
+  )
+`);
+
+// Indexes for graph queries
+db.run(`CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_doc_entities_doc ON document_entities(document_id)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_doc_entities_entity ON document_entities(entity_id)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_entity_rels_a ON entity_relationships(entity_a_id)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_entity_rels_b ON entity_relationships(entity_b_id)`);
 db.run(`CREATE INDEX IF NOT EXISTS idx_highlights_document ON highlights(document_id)`);
 db.run(`CREATE INDEX IF NOT EXISTS idx_notes_document ON notes(document_id)`);
 
@@ -110,6 +158,9 @@ db.run(`CREATE INDEX IF NOT EXISTS idx_notes_document ON notes(document_id)`);
 
   console.log('✅ Database tables initialized');
 }
+
+// Near the top of database.ts, after db is created:
+export { db };
 
 // Save database to disk
 function saveDatabase() {
@@ -607,6 +658,206 @@ export function deleteNote(id: string): void {
   saveDatabase();
 }
 
+// ==================== ENTITIES OPERATIONS ====================
+
+export interface EntityRow {
+  id: string;
+  name: string;
+  type: string;
+  frequency: number;
+  created_at: number;
+}
+
+export interface InsertEntityData {
+  id: string;
+  name: string;
+  type: string;
+  frequency?: number;
+}
+
+export function insertEntity(data: InsertEntityData): void {
+  db.run(
+    `INSERT OR IGNORE INTO entities (id, name, type, frequency, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [data.id, data.name, data.type, data.frequency || 1, Date.now()]
+  );
+  saveDatabase();
+}
+
+export function getEntityByName(name: string): EntityRow | null {
+  const result = db.exec('SELECT * FROM entities WHERE LOWER(name) = LOWER(?)', [name]);
+  if (result.length === 0 || result[0].values.length === 0) return null;
+
+  const row = result[0].values[0];
+  const obj: any = {};
+  result[0].columns.forEach((col, i) => {
+    obj[col] = row[i];
+  });
+  return obj as EntityRow;
+}
+
+export function getAllEntities(limit: number = 1000): EntityRow[] {
+  const result = db.exec(
+    `SELECT * FROM entities ORDER BY frequency DESC LIMIT ?`,
+    [limit]
+  );
+
+  if (result.length === 0) return [];
+
+  return result[0].values.map((row) => {
+    const obj: any = {};
+    result[0].columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as EntityRow;
+  });
+}
+
+export function incrementEntityFrequency(entityId: string): void {
+  db.run('UPDATE entities SET frequency = frequency + 1 WHERE id = ?', [entityId]);
+  saveDatabase();
+}
+
+// ==================== DOCUMENT-ENTITY RELATIONSHIPS ====================
+
+export interface DocumentEntityRow {
+  id: string;
+  document_id: string;
+  entity_id: string;
+  frequency: number;
+  context: string | null;
+  created_at: number;
+}
+
+export interface InsertDocumentEntityData {
+  id: string;
+  document_id: string;
+  entity_id: string;
+  frequency?: number;
+  context?: string;
+}
+
+export function insertDocumentEntity(data: InsertDocumentEntityData): void {
+  db.run(
+    `INSERT OR REPLACE INTO document_entities (id, document_id, entity_id, frequency, context, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      data.id,
+      data.document_id,
+      data.entity_id,
+      data.frequency || 1,
+      data.context || null,
+      Date.now(),
+    ]
+  );
+  saveDatabase();
+}
+
+export function getDocumentEntities(documentId: string): DocumentEntityRow[] {
+  const result = db.exec(
+    'SELECT * FROM document_entities WHERE document_id = ? ORDER BY frequency DESC',
+    [documentId]
+  );
+
+  if (result.length === 0) return [];
+
+  return result[0].values.map((row) => {
+    const obj: any = {};
+    result[0].columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as DocumentEntityRow;
+  });
+}
+
+export function getEntityDocuments(entityId: string): DocumentEntityRow[] {
+  const result = db.exec(
+    'SELECT * FROM document_entities WHERE entity_id = ? ORDER BY frequency DESC',
+    [entityId]
+  );
+
+  if (result.length === 0) return [];
+
+  return result[0].values.map((row) => {
+    const obj: any = {};
+    result[0].columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as DocumentEntityRow;
+  });
+}
+
+// ==================== ENTITY RELATIONSHIPS ====================
+
+export interface EntityRelationshipRow {
+  id: string;
+  entity_a_id: string;
+  entity_b_id: string;
+  relationship_type: string | null;
+  strength: number;
+  created_at: number;
+}
+
+export interface InsertEntityRelationshipData {
+  id: string;
+  entity_a_id: string;
+  entity_b_id: string;
+  relationship_type?: string;
+  strength?: number;
+}
+
+export function insertEntityRelationship(data: InsertEntityRelationshipData): void {
+  db.run(
+    `INSERT OR REPLACE INTO entity_relationships (id, entity_a_id, entity_b_id, relationship_type, strength, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      data.id,
+      data.entity_a_id,
+      data.entity_b_id,
+      data.relationship_type || 'related_to',
+      data.strength || 0.5,
+      Date.now(),
+    ]
+  );
+  saveDatabase();
+}
+
+export function getEntityRelationships(entityId: string): EntityRelationshipRow[] {
+  const result = db.exec(
+    `SELECT * FROM entity_relationships 
+     WHERE entity_a_id = ? OR entity_b_id = ?
+     ORDER BY strength DESC`,
+    [entityId, entityId]
+  );
+
+  if (result.length === 0) return [];
+
+  return result[0].values.map((row) => {
+    const obj: any = {};
+    result[0].columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as EntityRelationshipRow;
+  });
+}
+
+export function getAllEntityRelationships(limit: number = 1000): EntityRelationshipRow[] {
+  const result = db.exec(
+    `SELECT * FROM entity_relationships ORDER BY strength DESC LIMIT ?`,
+    [limit]
+  );
+
+  if (result.length === 0) return [];
+
+  return result[0].values.map((row) => {
+    const obj: any = {};
+    result[0].columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as EntityRelationshipRow;
+  });
+}
+
 // Update exports
 export default {
   insertDocument,
@@ -632,4 +883,14 @@ export default {
   getNotesByDocumentId,
   updateNote,
   deleteNote,
+  insertEntity,
+  getEntityByName,
+  getAllEntities,
+  incrementEntityFrequency,
+  insertDocumentEntity,
+  getDocumentEntities,
+  getEntityDocuments,
+  insertEntityRelationship,
+  getEntityRelationships,
+  getAllEntityRelationships,
 };

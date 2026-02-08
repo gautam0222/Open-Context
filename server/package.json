@@ -13,10 +13,12 @@
     "@mozilla/readability": "^0.6.0",
     "@open-context/shared": "*",
     "@types/jsdom": "^27.0.0",
+    "compromise": "^14.14.5",
     "cors": "^2.8.5",
     "dotenv": "^16.4.1",
     "express": "^4.18.2",
     "jsdom": "^24.0.0",
+    "natural": "^8.1.0",
     "node-fetch": "^2.7.0",
     "sql.js": "^1.13.0"
   },
