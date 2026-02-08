@@ -67,6 +67,35 @@ function initializeTables() {
     )
   `);
 
+  db.run(`
+  CREATE TABLE IF NOT EXISTS highlights (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    color TEXT,
+    position_start INTEGER,
+    position_end INTEGER,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    highlight_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER,
+    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY(highlight_id) REFERENCES highlights(id) ON DELETE CASCADE
+  )
+`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_highlights_document ON highlights(document_id)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_notes_document ON notes(document_id)`);
+
   // Create indexes for documents
   db.run(`CREATE INDEX IF NOT EXISTS idx_url ON documents(url)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_created_at ON documents(created_at DESC)`);
@@ -460,7 +489,125 @@ export function exec(sql: string, params?: any[]) {
   return db.exec(sql, params);
 }
 
+// ==================== HIGHLIGHTS OPERATIONS ====================
 
+export interface HighlightRow {
+  id: string;
+  document_id: string;
+  text: string;
+  color: string | null;
+  position_start: number;
+  position_end: number;
+  created_at: number;
+}
+
+export interface InsertHighlightData {
+  id: string;
+  document_id: string;
+  text: string;
+  color?: string;
+  position_start: number;
+  position_end: number;
+}
+
+export function insertHighlight(data: InsertHighlightData): void {
+  db.run(
+    `INSERT INTO highlights (id, document_id, text, color, position_start, position_end, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      data.id,
+      data.document_id,
+      data.text,
+      data.color || 'yellow',
+      data.position_start,
+      data.position_end,
+      Date.now(),
+    ]
+  );
+  saveDatabase();
+}
+
+export function getHighlightsByDocumentId(documentId: string): HighlightRow[] {
+  const result = db.exec(
+    'SELECT * FROM highlights WHERE document_id = ? ORDER BY position_start ASC',
+    [documentId]
+  );
+
+  if (result.length === 0) return [];
+
+  return result[0].values.map((row) => {
+    const obj: any = {};
+    result[0].columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as HighlightRow;
+  });
+}
+
+export function deleteHighlight(id: string): void {
+  db.run('DELETE FROM highlights WHERE id = ?', [id]);
+  saveDatabase();
+}
+
+// ==================== NOTES OPERATIONS ====================
+
+export interface NoteRow {
+  id: string;
+  document_id: string;
+  content: string;
+  highlight_id: string | null;
+  created_at: number;
+  updated_at: number | null;
+}
+
+export interface InsertNoteData {
+  id: string;
+  document_id: string;
+  content: string;
+  highlight_id?: string;
+}
+
+export function insertNote(data: InsertNoteData): void {
+  db.run(
+    `INSERT INTO notes (id, document_id, content, highlight_id, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [data.id, data.document_id, data.content, data.highlight_id || null, Date.now()]
+  );
+  saveDatabase();
+}
+
+export function getNotesByDocumentId(documentId: string): NoteRow[] {
+  const result = db.exec(
+    'SELECT * FROM notes WHERE document_id = ? ORDER BY created_at DESC',
+    [documentId]
+  );
+
+  if (result.length === 0) return [];
+
+  return result[0].values.map((row) => {
+    const obj: any = {};
+    result[0].columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as NoteRow;
+  });
+}
+
+export function updateNote(id: string, content: string): void {
+  db.run('UPDATE notes SET content = ?, updated_at = ? WHERE id = ?', [
+    content,
+    Date.now(),
+    id,
+  ]);
+  saveDatabase();
+}
+
+export function deleteNote(id: string): void {
+  db.run('DELETE FROM notes WHERE id = ?', [id]);
+  saveDatabase();
+}
+
+// Update exports
 export default {
   insertDocument,
   updateDocument,
@@ -478,5 +625,11 @@ export default {
   getChunkCountByDocumentId,
   getTotalChunkCount,
   deleteChunksByDocumentId,
-  exec,
+  insertHighlight,
+  getHighlightsByDocumentId,
+  deleteHighlight,
+  insertNote,
+  getNotesByDocumentId,
+  updateNote,
+  deleteNote,
 };

@@ -14,7 +14,15 @@ import {
   getDatabaseStats,
   deleteChunksByDocumentId,
   deleteDocument,
+  insertHighlight,
+  getHighlightsByDocumentId,
+  deleteHighlight,
+  insertNote,
+  getNotesByDocumentId,
+  updateNote,
+  deleteNote,
 } from './database';
+import { generateId } from '@open-context/shared';
 import { extractContent } from './extractor';
 import { chunkText, getChunkingStats } from './chunker';
 import {
@@ -221,6 +229,116 @@ app.delete('/api/documents/:id', (req: Request, res: Response) => {
   }
 });
 
+// Get document with full content and chunks
+app.get('/api/documents/:id/full', (req: Request, res: Response) => {
+  try {
+    const document = getDocumentById(req.params.id);
+    
+    if (!document) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    
+    // Get all chunks for this document
+    const chunks = getChunksByDocumentId(req.params.id);
+    
+    // Parse embeddings if needed (they're stored as JSON strings)
+    const chunksWithEmbeddings = chunks.map(chunk => ({
+      ...chunk,
+      embedding: chunk.embedding ? JSON.parse(chunk.embedding) : null,
+    }));
+    
+    res.json({
+      document,
+      chunks: chunksWithEmbeddings,
+      chunkCount: chunks.length,
+    });
+  } catch (error) {
+    console.error('❌ Error fetching document:', error);
+    res.status(500).json({
+      error: 'Failed to fetch document',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Get related documents (based on similar content)
+app.get('/api/documents/:id/related', async (req: Request, res: Response) => {
+  try {
+    const document = getDocumentById(req.params.id);
+    
+    if (!document) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    
+    // Get chunks for this document
+    const chunks = getChunksByDocumentId(req.params.id);
+    
+    if (chunks.length === 0 || !chunks[0].embedding) {
+      return res.json({ related: [] });
+    }
+    
+    // Use first chunk's embedding to find similar documents
+    const embedding = JSON.parse(chunks[0].embedding);
+    
+    // Get all other documents
+    const allDocs = getAllDocuments(1000);
+    const otherDocs = allDocs.filter(d => d.id !== req.params.id);
+    
+    // Calculate similarity for each document
+    const similarities: { doc: any; similarity: number }[] = [];
+    
+    for (const otherDoc of otherDocs) {
+      const otherChunks = getChunksByDocumentId(otherDoc.id);
+      
+      if (otherChunks.length === 0 || !otherChunks[0].embedding) continue;
+      
+      const otherEmbedding = JSON.parse(otherChunks[0].embedding);
+      const similarity = cosineSimilarity(embedding, otherEmbedding);
+      
+      similarities.push({ doc: otherDoc, similarity });
+    }
+    
+    // Sort by similarity and take top 5
+    const related = similarities
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 5)
+      .map(item => ({
+        ...item.doc,
+        similarity: item.similarity,
+      }));
+    
+    res.json({ related });
+  } catch (error) {
+    console.error('❌ Error finding related documents:', error);
+    res.status(500).json({
+      error: 'Failed to find related documents',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Helper function (add this near the top with imports)
+function cosineSimilarity(vecA: number[], vecB: number[]): number {
+  if (vecA.length !== vecB.length) return 0;
+  
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  
+  normA = Math.sqrt(normA);
+  normB = Math.sqrt(normB);
+  
+  if (normA === 0 || normB === 0) return 0;
+  
+  return dotProduct / (normA * normB);
+}
+
 // Get chunks for a document
 app.get('/api/documents/:id/chunks', (req: Request, res: Response) => {
   try {
@@ -274,6 +392,103 @@ app.get('/api/stats', (_req: Request, res: Response) => {
     res.status(500).json({
       error: 'Failed to get stats',
     });
+  }
+});
+
+app.get('/api/documents/:id/highlights', (req: Request, res: Response) => {
+  try {
+    const highlights = getHighlightsByDocumentId(req.params.id);
+    res.json({ highlights });
+  } catch (error) {
+    console.error('❌ Error fetching highlights:', error);
+    res.status(500).json({ error: 'Failed to fetch highlights' });
+  }
+});
+
+app.post('/api/documents/:id/highlights', (req: Request, res: Response) => {
+  try {
+    const { text, color, position_start, position_end } = req.body;
+    
+    const highlightId = generateId('highlight');
+    
+    insertHighlight({
+      id: highlightId,
+      document_id: req.params.id,
+      text,
+      color,
+      position_start,
+      position_end,
+    });
+    
+    res.json({ success: true, id: highlightId });
+  } catch (error) {
+    console.error('❌ Error creating highlight:', error);
+    res.status(500).json({ error: 'Failed to create highlight' });
+  }
+});
+
+app.delete('/api/highlights/:id', (req: Request, res: Response) => {
+  try {
+    deleteHighlight(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error deleting highlight:', error);
+    res.status(500).json({ error: 'Failed to delete highlight' });
+  }
+});
+
+// Get notes for a document
+app.get('/api/documents/:id/notes', (req: Request, res: Response) => {
+  try {
+    const notes = getNotesByDocumentId(req.params.id);
+    res.json({ notes });
+  } catch (error) {
+    console.error('❌ Error fetching notes:', error);
+    res.status(500).json({ error: 'Failed to fetch notes' });
+  }
+});
+
+// Create note
+app.post('/api/documents/:id/notes', (req: Request, res: Response) => {
+  try {
+    const { content, highlight_id } = req.body;
+    
+    const noteId = generateId('note');
+    
+    insertNote({
+      id: noteId,
+      document_id: req.params.id,
+      content,
+      highlight_id,
+    });
+    
+    res.json({ success: true, id: noteId });
+  } catch (error) {
+    console.error('❌ Error creating note:', error);
+    res.status(500).json({ error: 'Failed to create note' });
+  }
+});
+
+// Update note
+app.put('/api/notes/:id', (req: Request, res: Response) => {
+  try {
+    const { content } = req.body;
+    updateNote(req.params.id, content);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error updating note:', error);
+    res.status(500).json({ error: 'Failed to update note' });
+  }
+});
+
+// Delete note
+app.delete('/api/notes/:id', (req: Request, res: Response) => {
+  try {
+    deleteNote(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error deleting note:', error);
+    res.status(500).json({ error: 'Failed to delete note' });
   }
 });
 
