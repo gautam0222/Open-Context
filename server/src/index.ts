@@ -1,9 +1,11 @@
 import express, { Express, Request, Response } from 'express';
-import { semanticSearch } from './search';
+import { searchSimilarChunks } from './search';
+import { getSearchStats } from './search';
 import { checkEmbeddingServer } from './embedder';
 import { ensureDbReady, getTotalChunkCount } from './database';
 import { generateEmbeddingsBatch } from './embedder';
 import cors from 'cors';
+import { chatWithContext, ChatMessage } from './rag';
 import dotenv from 'dotenv';
 import { db } from './database';
 import {
@@ -40,6 +42,7 @@ import { generateId } from '@open-context/shared';
 import { extractContent } from './extractor';
 import { chunkText, getChunkingStats } from './chunker';
 import { extractEntities, findCoOccurrences } from './nlp';
+import { generateInsights, buildTimeline, getReadingStats } from './insights';
 
 // Load environment variables
 dotenv.config();
@@ -261,78 +264,66 @@ console.log(`✅ Extracted and linked ${entityMap.size} entities`);
 });
 
 // Get graph data (nodes and edges)
-app.get('/api/graph', (_req: Request, res: Response) => {
+// NEW GRAPH API - Simple and meaningful
+// NEW GRAPH API - Simple and meaningful
+app.get('/api/graph', async (_req: Request, res: Response) => {
   try {
-    console.log('🕸️ Building knowledge graph...');
+    console.log('🕸️ Building document similarity graph...');
     
-    // Get all entities (nodes)
-    const entities = getAllEntities(500);
+    // Get all documents with embeddings
+    const documents = getAllDocuments(100);
     
-    // Get all relationships (edges)
-    const relationships = getAllEntityRelationships(1000);
+    // Build similarity matrix using existing embeddings
+    const nodes = [];
+    const edges = [];
     
-    // Get all documents
-    const documents = getAllDocuments(500);
-    
-    // Helper function for node colors
-    const getColorByType = (type: string): string => {
-      const colors: Record<string, string> = {
-        person: '#3b82f6',
-        place: '#10b981',
-        organization: '#8b5cf6',
-        topic: '#f59e0b',
-        concept: '#ec4899',
-        document: '#6b7280',
-      };
-      return colors[type] || '#9ca3af';
-    };
-    
-    // Build graph structure
-    const nodes = [
-      // Entity nodes
-      ...entities.map(entity => ({
-        id: entity.id,
-        label: entity.name,
-        type: entity.type,
-        size: Math.log(entity.frequency + 1) * 3,
-        color: getColorByType(entity.type),
-      })),
-      // Document nodes
-      ...documents.map(doc => ({
+    // Create document nodes
+    for (const doc of documents) {
+      nodes.push({
         id: doc.id,
         label: doc.title || 'Untitled',
         type: 'document',
-        size: Math.log((doc.word_count || 100) / 100) * 2,
-        color: '#9ca3af',
-      })),
-    ];
-    
-    const edges = [
-      // Entity relationships
-      ...relationships.map((rel, idx) => ({
-        id: `edge-rel-${idx}`,
-        source: rel.entity_a_id,
-        target: rel.entity_b_id,
-        size: rel.strength * 2,
-        color: '#e5e7eb',
-      })),
-    ];
-    
-    // Add document-entity edges
-    const allDocEntitiesResult = db.exec('SELECT * FROM document_entities');
-    if (allDocEntitiesResult.length > 0) {
-      allDocEntitiesResult[0].values.forEach((row, idx) => {
-        edges.push({
-          id: `edge-doc-${idx}`,
-          source: String(row[1]), // document_id
-          target: String(row[2]), // entity_id
-          size: 1,
-          color: '#f3f4f6',
-        });
+        size: Math.log((doc.word_count || 100) / 100 + 1) * 10 + 5,
+        color: '#4f46e5',
+        url: doc.url,
+        wordCount: doc.word_count,
       });
     }
     
-    console.log(`✅ Graph: ${nodes.length} nodes, ${edges.length} edges`);
+    // Create edges based on embedding similarity
+    for (let i = 0; i < documents.length; i++) {
+      for (let j = i + 1; j < documents.length; j++) {
+        const doc1 = documents[i];
+        const doc2 = documents[j];
+        
+        // Get first chunk embedding for each document
+        const chunks1 = getChunksByDocumentId(doc1.id);
+        const chunks2 = getChunksByDocumentId(doc2.id);
+        
+        if (chunks1.length === 0 || chunks2.length === 0) continue;
+        if (!chunks1[0].embedding || !chunks2[0].embedding) continue;
+        
+        const emb1 = JSON.parse(chunks1[0].embedding);
+        const emb2 = JSON.parse(chunks2[0].embedding);
+        
+        // Calculate cosine similarity
+        const similarity = cosineSimilarity(emb1, emb2);
+        
+        // Only connect if similarity is high enough
+        if (similarity > 0.5) {
+          edges.push({
+            id: `${doc1.id}-${doc2.id}`,
+            source: doc1.id,
+            target: doc2.id,
+            size: similarity * 3,
+            color: `rgba(79, 70, 229, ${similarity * 0.5})`,
+            similarity: similarity,
+          });
+        }
+      }
+    }
+    
+    console.log(`✅ Graph: ${nodes.length} documents, ${edges.length} connections`);
     
     res.json({
       nodes,
@@ -340,7 +331,6 @@ app.get('/api/graph', (_req: Request, res: Response) => {
       stats: {
         totalNodes: nodes.length,
         totalEdges: edges.length,
-        entities: entities.length,
         documents: documents.length,
       },
     });
@@ -348,6 +338,82 @@ app.get('/api/graph', (_req: Request, res: Response) => {
     console.error('❌ Graph error:', error);
     res.status(500).json({
       error: 'Failed to build graph',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Get AI-generated insights
+app.get('/api/insights', async (_req: Request, res: Response) => {
+  try {
+    console.log('🧠 Generating insights...');
+    const insights = await generateInsights();
+    
+    res.json({
+      insights,
+      count: insights.length,
+    });
+  } catch (error) {
+    console.error('❌ Insights error:', error);
+    res.status(500).json({
+      error: 'Failed to generate insights',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Get learning timeline
+app.get('/api/timeline', (_req: Request, res: Response) => {
+  try {
+    console.log('📅 Building timeline...');
+    const timeline = buildTimeline();
+    
+    res.json({
+      timeline,
+      count: timeline.length,
+    });
+  } catch (error) {
+    console.error('❌ Timeline error:', error);
+    res.status(500).json({
+      error: 'Failed to build timeline',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Get reading statistics
+app.get('/api/stats/reading', (_req: Request, res: Response) => {
+  try {
+    const stats = getReadingStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('❌ Reading stats error:', error);
+    res.status(500).json({
+      error: 'Failed to get reading stats',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Chat endpoint
+app.post('/api/chat', async (req: Request, res: Response) => {
+  try {
+    const { query, history } = req.body;
+
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({ error: 'Query is required' });
+    }
+
+    console.log(`💬 Chat request: "${query}"`);
+
+    const conversationHistory: ChatMessage[] = history || [];
+    const response = await chatWithContext(query, conversationHistory);
+
+    res.json(response);
+  } catch (error) {
+    console.error('❌ Chat error:', error);
+    res.status(500).json({
+      error: 'Chat failed',
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
@@ -715,6 +781,19 @@ app.delete('/api/highlights/:id', (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/search/stats', (_req: Request, res: Response) => {
+  try {
+    const stats = getSearchStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('❌ Search stats error:', error);
+    res.status(500).json({
+      error: 'Failed to get search stats',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 // Get notes for a document
 app.get('/api/documents/:id/notes', (req: Request, res: Response) => {
   try {
@@ -774,30 +853,19 @@ app.delete('/api/notes/:id', (req: Request, res: Response) => {
 // Search endpoint (SEMANTIC SEARCH)
 app.post('/api/search', async (req: Request, res: Response) => {
   try {
-    const { query, limit = 10 } = req.body;
+    const { query, limit } = req.body;
 
     if (!query || typeof query !== 'string') {
-      return res.status(400).json({
-        error: 'Query is required',
-      });
+      return res.status(400).json({ error: 'Query is required' });
     }
 
-    console.log(`🔍 Search request: "${query}"`);
+    console.log(`🔍 Search request: "${query}" (limit: ${limit || 10})`);
 
-    const results = await semanticSearch(query, limit);
+    const results = await searchSimilarChunks(query, limit || 10);
 
     res.json({
-      query,
-      results: results.map((r) => ({
-        chunkId: r.chunkId,
-        documentId: r.documentId,
-        documentTitle: r.documentTitle,
-        documentUrl: r.documentUrl,
-        content: r.content,
-        similarity: r.similarity,
-        chunkIndex: r.chunkIndex,
-      })),
-      total: results.length,
+      results,
+      count: results.length,
     });
   } catch (error) {
     console.error('❌ Search error:', error);
@@ -980,6 +1048,148 @@ app.get('/api/entities/:id', (req: Request, res: Response) => {
   } catch (error) {
     console.error('❌ Error fetching entity:', error);
     res.status(500).json({ error: 'Failed to fetch entity' });
+  }
+});
+
+// Global progress tracker
+let reprocessingProgress = {
+  isRunning: false,
+  current: 0,
+  total: 0,
+  currentDocument: '',
+};
+
+// Get re-processing progress
+app.get('/api/documents/reprocess/progress', (_req: Request, res: Response) => {
+  res.json(reprocessingProgress);
+});
+
+// Update the re-process endpoint to use progress tracking
+app.post('/api/documents/reprocess', async (_req: Request, res: Response) => {
+  if (reprocessingProgress.isRunning) {
+    return res.status(409).json({
+      error: 'Re-processing already in progress',
+      progress: reprocessingProgress,
+    });
+  }
+
+  try {
+    const documents = getAllDocuments(1000);
+    
+    reprocessingProgress = {
+      isRunning: true,
+      current: 0,
+      total: documents.length,
+      currentDocument: '',
+    };
+
+    // Send immediate response
+    res.json({
+      success: true,
+      message: 'Re-processing started',
+      total: documents.length,
+    });
+
+    // Process in background
+    setImmediate(async () => {
+      console.log(`\n🔄 Re-processing ${documents.length} documents...\n`);
+      
+      let processedCount = 0;
+      let entityCount = 0;
+      
+      for (const doc of documents) {
+        reprocessingProgress.current = processedCount + 1;
+        reprocessingProgress.currentDocument = doc.title || 'Untitled';
+        
+        if (!doc.content) {
+          processedCount++;
+          continue;
+        }
+        
+        console.log(`[${processedCount + 1}/${documents.length}] ${doc.title?.substring(0, 60)}...`);
+        
+        try {
+          const entities = extractEntities(doc.content);
+          
+          if (entities.length === 0) {
+            processedCount++;
+            continue;
+          }
+          
+          const entityMap: Map<string, string> = new Map();
+          
+          for (const entity of entities) {
+            let existingEntity = getEntityByName(entity.text);
+            
+            if (existingEntity) {
+              incrementEntityFrequency(existingEntity.id);
+              entityMap.set(entity.text.toLowerCase(), existingEntity.id);
+            } else {
+              const entityId = generateId('entity');
+              insertEntity({
+                id: entityId,
+                name: entity.text,
+                type: entity.type,
+                frequency: entity.frequency,
+              });
+              entityMap.set(entity.text.toLowerCase(), entityId);
+              entityCount++;
+            }
+          }
+          
+          for (const [entityText, entityId] of entityMap.entries()) {
+            const entity = entities.find(e => e.text.toLowerCase() === entityText);
+            if (entity) {
+              try {
+                insertDocumentEntity({
+                  id: generateId('doc_entity'),
+                  document_id: doc.id,
+                  entity_id: entityId,
+                  frequency: entity.frequency,
+                });
+              } catch (err) {
+                // Skip duplicates
+              }
+            }
+          }
+          
+          const coOccurrences = findCoOccurrences(entities, doc.content);
+          for (const coOcc of coOccurrences) {
+            const entity1Id = entityMap.get(coOcc.entity1);
+            const entity2Id = entityMap.get(coOcc.entity2);
+            
+            if (entity1Id && entity2Id && entity1Id !== entity2Id) {
+              try {
+                insertEntityRelationship({
+                  id: generateId('rel'),
+                  entity_a_id: entity1Id,
+                  entity_b_id: entity2Id,
+                  relationship_type: 'co_occurs',
+                  strength: coOcc.strength,
+                });
+              } catch (err) {
+                // Skip duplicates
+              }
+            }
+          }
+          
+          console.log(`  ✅ ${entityMap.size} entities`);
+          processedCount++;
+          
+        } catch (error) {
+          console.error(`  ❌ Error:`, error);
+          processedCount++;
+        }
+      }
+      
+      reprocessingProgress.isRunning = false;
+      console.log(`\n🎉 COMPLETE! ${processedCount} documents, ${entityCount} new entities\n`);
+    });
+    
+  } catch (error) {
+    reprocessingProgress.isRunning = false;
+    console.error('❌ Re-processing error:', error);
+    res.status(500).json({ error: 'Failed to start re-processing' });
   }
 });
 // Export all documents as JSON
