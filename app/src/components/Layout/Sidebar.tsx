@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { FolderIcon } from '@heroicons/react/24/outline';
 import { 
   HomeIcon, 
   MagnifyingGlassIcon, 
@@ -10,15 +11,21 @@ import {
   Cog6ToothIcon,
   SparklesIcon,
   Square3Stack3DIcon,
+  CloudArrowUpIcon,
+  BookOpenIcon,
+  ShareIcon,
+  ChatBubbleBottomCenterTextIcon,
 } from '@heroicons/react/24/outline';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: HomeIcon },
   { name: 'Search', href: '/search', icon: MagnifyingGlassIcon },
-  { name: 'Library', href: '/library', icon: DocumentTextIcon },
-  { name: 'Knowledge Graph', href: '/graph', icon: Square3Stack3DIcon, badge: 'Pro' },
-  { name: 'AI Chat', href: '/chat', icon: SparklesIcon, badge: 'Pro' },
-  { name: 'Analytics', href: '/analytics', icon: ChartBarIcon, badge: 'Pro' },
+  { name: 'Library', href: '/library', icon: BookOpenIcon },
+  { name: 'Collections', href: '/collections', icon: FolderIcon }, // ADD THIS
+  { name: 'Upload Files', href: '/upload', icon: CloudArrowUpIcon, badge: 'New' },
+  { name: 'Knowledge Graph', href: '/graph', icon: ShareIcon, badge: 'Pro' },
+  { name: 'AI Chat', href: '/chat', icon: ChatBubbleBottomCenterTextIcon, badge: 'Pro' },
+  { name: 'Analytics', href: '/analytics', icon: ChartBarIcon },
   { name: 'Settings', href: '/settings', icon: Cog6ToothIcon },
 ];
 
@@ -58,10 +65,14 @@ export default function Sidebar() {
               <Icon className="w-5 h-5 flex-shrink-0" />
               <span className="flex-1">{item.name}</span>
               {item.badge && (
-                <span className="px-2 py-0.5 text-xs font-medium bg-brand-100 text-brand-700 rounded-full">
-                  {item.badge}
-                </span>
-              )}
+  <span className={`ml-auto px-2 py-0.5 text-xs font-semibold rounded-full ${
+    item.badge === 'Pro' 
+      ? 'bg-amber-100 text-amber-700'
+      : 'bg-green-100 text-green-700'
+  }`}>
+    {item.badge}
+  </span>
+)}
             </Link>
           );
         })}

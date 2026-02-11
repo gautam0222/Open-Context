@@ -1,4 +1,5 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import { generateId } from '@open-context/shared';
 import path from 'path';
 import fs from 'fs';
 
@@ -132,6 +133,44 @@ db.run(`
     FOREIGN KEY(entity_b_id) REFERENCES entities(id) ON DELETE CASCADE,
     UNIQUE(entity_a_id, entity_b_id)
   )
+`);
+
+// Collections table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS collections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    color TEXT DEFAULT '#6366f1',
+    icon TEXT DEFAULT '📁',
+    parent_id TEXT,
+    position INTEGER DEFAULT 0,
+    is_smart BOOLEAN DEFAULT 0,
+    smart_rules TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER,
+    FOREIGN KEY(parent_id) REFERENCES collections(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_collections_parent ON collections(parent_id);
+  CREATE INDEX IF NOT EXISTS idx_collections_position ON collections(position);
+`);
+
+// Document-Collection relationships (many-to-many)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS collection_documents (
+    id TEXT PRIMARY KEY,
+    collection_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    added_at INTEGER NOT NULL,
+    position INTEGER DEFAULT 0,
+    UNIQUE(collection_id, document_id),
+    FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_collection_docs_collection ON collection_documents(collection_id);
+  CREATE INDEX IF NOT EXISTS idx_collection_docs_document ON collection_documents(document_id);
 `);
 
 // Indexes for graph queries
@@ -559,6 +598,259 @@ export interface InsertHighlightData {
   color?: string;
   position_start: number;
   position_end: number;
+}
+
+// ============= COLLECTIONS =============
+
+export interface Collection {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string;
+  icon: string;
+  parent_id: string | null;
+  position: number;
+  is_smart: number;
+  smart_rules: string | null;
+  created_at: number;
+  updated_at: number | null;
+}
+
+export interface InsertCollection {
+  id: string;
+  name: string;
+  description?: string | null;
+  color?: string;
+  icon?: string;
+  parent_id?: string | null;
+  position?: number;
+  is_smart?: number;
+  smart_rules?: string | null;
+  created_at: number;
+}
+
+export interface CollectionDocument {
+  id: string;
+  collection_id: string;
+  document_id: string;
+  added_at: number;
+  position: number;
+}
+
+/**
+ * Insert a new collection
+ */
+export function insertCollection(collection: InsertCollection): void {
+  const stmt = db.prepare(`
+    INSERT INTO collections (
+      id, name, description, color, icon, parent_id, position, 
+      is_smart, smart_rules, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  stmt.run([
+    collection.id,
+    collection.name,
+    collection.description || null,
+    collection.color || '#6366f1',
+    collection.icon || '📁',
+    collection.parent_id || null,
+    collection.position || 0,
+    collection.is_smart || 0,
+    collection.smart_rules || null,
+    collection.created_at,
+  ]);
+}
+
+/**
+ * Get all collections
+ */
+export function getAllCollections(): Collection[] {
+  const result = db.exec('SELECT * FROM collections ORDER BY position ASC, created_at DESC');
+  
+  if (result.length === 0) return [];
+
+  const columns = result[0].columns;
+  return result[0].values.map(row => {
+    const obj: any = {};
+    columns.forEach((col, idx) => {
+      obj[col] = row[idx];
+    });
+    return obj as Collection;
+  });
+}
+
+/**
+ * Get collection by ID
+ */
+export function getCollectionById(id: string): Collection | null {
+  const result = db.exec('SELECT * FROM collections WHERE id = ?', [id]);
+  
+  if (result.length === 0 || result[0].values.length === 0) return null;
+
+  const columns = result[0].columns;
+  const row = result[0].values[0];
+  const obj: any = {};
+  columns.forEach((col, idx) => {
+    obj[col] = row[idx];
+  });
+  return obj as Collection;
+}
+
+/**
+ * Get child collections (subcollections)
+ */
+export function getChildCollections(parentId: string | null): Collection[] {
+  const query = parentId 
+    ? 'SELECT * FROM collections WHERE parent_id = ? ORDER BY position ASC'
+    : 'SELECT * FROM collections WHERE parent_id IS NULL ORDER BY position ASC';
+  
+  const result = parentId 
+    ? db.exec(query, [parentId])
+    : db.exec(query);
+  
+  if (result.length === 0) return [];
+
+  const columns = result[0].columns;
+  return result[0].values.map(row => {
+    const obj: any = {};
+    columns.forEach((col, idx) => {
+      obj[col] = row[idx];
+    });
+    return obj as Collection;
+  });
+}
+
+/**
+ * Update collection
+ */
+export function updateCollection(id: string, updates: Partial<Collection>): void {
+  const fields: string[] = [];
+  const values: any[] = [];
+
+  Object.entries(updates).forEach(([key, value]) => {
+    if (key !== 'id' && value !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(value);
+    }
+  });
+
+  if (fields.length === 0) return;
+
+  fields.push('updated_at = ?');
+  values.push(Date.now());
+  values.push(id);
+
+  const stmt = db.prepare(`UPDATE collections SET ${fields.join(', ')} WHERE id = ?`);
+  stmt.run(values);
+}
+
+/**
+ * Delete collection (and all subcollections)
+ */
+export function deleteCollection(id: string): void {
+  db.exec('DELETE FROM collections WHERE id = ?', [id]);
+}
+
+/**
+ * Add document to collection
+ */
+export function addDocumentToCollection(collectionId: string, documentId: string): void {
+  const id = generateId('col_doc');
+  
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO collection_documents (id, collection_id, document_id, added_at, position)
+    VALUES (?, ?, ?, ?, 0)
+  `);
+
+  stmt.run([id, collectionId, documentId, Date.now()]);
+}
+
+/**
+ * Remove document from collection
+ */
+export function removeDocumentFromCollection(collectionId: string, documentId: string): void {
+  db.exec(
+    'DELETE FROM collection_documents WHERE collection_id = ? AND document_id = ?',
+    [collectionId, documentId]
+  );
+}
+
+/**
+ * Get documents in a collection
+ */
+export function getCollectionDocuments(collectionId: string): Document[] {
+  const result = db.exec(`
+    SELECT d.* FROM documents d
+    INNER JOIN collection_documents cd ON d.id = cd.document_id
+    WHERE cd.collection_id = ?
+    ORDER BY cd.position ASC, cd.added_at DESC
+  `, [collectionId]);
+  
+  if (result.length === 0) return [];
+
+  const columns = result[0].columns;
+  return result[0].values.map(row => {
+    const obj: any = {};
+    columns.forEach((col, idx) => {
+      obj[col] = row[idx];
+    });
+    return obj as Document;
+  });
+}
+
+/**
+ * Get collections containing a document
+ */
+export function getDocumentCollections(documentId: string): Collection[] {
+  const result = db.exec(`
+    SELECT c.* FROM collections c
+    INNER JOIN collection_documents cd ON c.id = cd.collection_id
+    WHERE cd.document_id = ?
+    ORDER BY c.name ASC
+  `, [documentId]);
+  
+  if (result.length === 0) return [];
+
+  const columns = result[0].columns;
+  return result[0].values.map(row => {
+    const obj: any = {};
+    columns.forEach((col, idx) => {
+      obj[col] = row[idx];
+    });
+    return obj as Collection;
+  });
+}
+
+/**
+ * Get collection statistics
+ */
+export function getCollectionStats(collectionId: string): {
+  documentCount: number;
+  totalWords: number;
+  lastUpdated: number | null;
+} {
+  const countResult = db.exec(
+    'SELECT COUNT(*) as count FROM collection_documents WHERE collection_id = ?',
+    [collectionId]
+  );
+
+  const wordsResult = db.exec(`
+    SELECT SUM(d.word_count) as total_words, MAX(cd.added_at) as last_updated
+    FROM documents d
+    INNER JOIN collection_documents cd ON d.id = cd.document_id
+    WHERE cd.collection_id = ?
+  `, [collectionId]);
+
+  const documentCount = countResult[0]?.values[0]?.[0] as number || 0;
+  const totalWords = wordsResult[0]?.values[0]?.[0] as number || 0;
+  const lastUpdated = wordsResult[0]?.values[0]?.[1] as number || null;
+
+  return {
+    documentCount,
+    totalWords,
+    lastUpdated,
+  };
 }
 
 export function insertHighlight(data: InsertHighlightData): void {

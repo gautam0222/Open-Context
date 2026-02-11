@@ -1,14 +1,13 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
-import { Toaster } from 'react-hot-toast';
-import ErrorBoundary from '@/components/ErrorBoundary'
+import ClientProvider from '@/components/ClientProvider';
 
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'Open Context - AI-Powered Knowledge Graph',
-  description: 'Your personal AI-powered knowledge graph with semantic search',
+  title: 'Open Context - AI-Powered Knowledge Base',
+  description: 'Your personal AI-powered knowledge base with semantic search and AI chat',
 };
 
 export default function RootLayout({
@@ -19,33 +18,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        <ErrorBoundary>
+        <ClientProvider>
           {children}
-        </ErrorBoundary>
-        <Toaster
-          position="top-right"
-          toastOptions={{
-            duration: 3000,
-            style: {
-              background: '#363636',
-              color: '#fff',
-              padding: '16px',
-              borderRadius: '12px',
-            },
-            success: {
-              iconTheme: {
-                primary: '#10b981',
-                secondary: '#fff',
-              },
-            },
-            error: {
-              iconTheme: {
-                primary: '#ef4444',
-                secondary: '#fff',
-              },
-            },
-          }}
-        />
+        </ClientProvider>
       </body>
     </html>
   );

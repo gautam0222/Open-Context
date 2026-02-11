@@ -1,5 +1,5 @@
 'use client';
-
+import { FolderPlusIcon } from '@heroicons/react/24/outline';
 import { useEffect, useState } from 'react';
 import MainLayout from '@/components/Layout/MainLayout';
 import Link from 'next/link';
@@ -36,9 +36,11 @@ export default function LibraryPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
   const [showActions, setShowActions] = useState<string | null>(null);
+  const [allCollections, setAllCollections] = useState<any[]>([]);
 
   useEffect(() => {
     loadDocuments();
+    loadCollections();
   }, []);
 
   const loadDocuments = async () => {
@@ -54,6 +56,16 @@ export default function LibraryPage() {
       setLoading(false);
     }
   };
+
+  const loadCollections = async () => {
+  try {
+    const response = await fetch('http://localhost:3001/api/collections');
+    const data = await response.json();
+    setAllCollections(data.collections || []);
+  } catch (error) {
+    console.error('Failed to load collections:', error);
+  }
+};
 
   const handleDelete = async (doc: Document) => {
     if (!confirm(`Delete "${doc.title}"?\n\nThis will permanently delete the document and all its chunks.`)) {
@@ -79,6 +91,26 @@ export default function LibraryPage() {
       console.error('Delete failed:', error);
     }
   };
+
+  const handleAddToCollection = async (documentId: string, collectionId: string) => {
+  try {
+    const response = await fetch(
+      `http://localhost:3001/api/collections/${collectionId}/documents`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document_id: documentId }),
+      }
+    );
+
+    if (!response.ok) throw new Error('Failed to add');
+
+    toast.success('Added to collection!');
+  } catch (error) {
+    console.error('Add to collection error:', error);
+    toast.error('Failed to add to collection');
+  }
+};
 
   const filteredDocuments = documents
     .filter((doc) => {
@@ -212,12 +244,14 @@ export default function LibraryPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredDocuments.map((doc) => (
             <DocumentCard
-              key={doc.id}
-              doc={doc}
-              onDelete={() => handleDelete(doc)}
-              formatDate={formatDate}
-              getDomain={getDomain}
-            />
+  key={doc.id}
+  doc={doc}
+  onDelete={() => handleDelete(doc)}
+  onAddToCollection={handleAddToCollection}
+  formatDate={formatDate}
+  getDomain={getDomain}
+/>
+
           ))}
         </div>
       )}
@@ -255,11 +289,13 @@ export default function LibraryPage() {
 function DocumentCard({
   doc,
   onDelete,
+  onAddToCollection,
   formatDate,
   getDomain,
 }: {
   doc: Document;
   onDelete: () => void;
+  onAddToCollection: (docId: string, collectionId: string) => void;
   formatDate: (ts: number) => string;
   getDomain: (url: string) => string;
 }) {
@@ -280,6 +316,21 @@ function DocumentCard({
             {doc.title || 'Untitled'}
           </h3>
         </div>
+
+        <button
+  onClick={(e) => {
+    e.preventDefault();
+    // Show collections dropdown
+    const collectionId = prompt('Enter collection ID (or visit Collections page):');
+    if (collectionId) {
+      onAddToCollection(doc.id, collectionId);
+    }
+  }}
+  className="p-2 text-gray-400 hover:text-brand-600 rounded-lg hover:bg-gray-100"
+  title="Add to collection"
+>
+  <FolderPlusIcon className="w-4 h-4" />
+</button>
 
         {/* Menu */}
         <div className="relative">
@@ -302,7 +353,7 @@ function DocumentCard({
                   className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
                 >
                   <EyeIcon className="w-4 h-4" />
-                  View document
+                  View Card
                 </Link>
                     <a
                   href={`http://localhost:3001/api/export/documents/${doc.id}/markdown`}

@@ -1,7 +1,8 @@
 'use client';
-
 import Sidebar from './Sidebar';
 import Header from './Header';
+import KeyboardShortcuts from '../Onboarding/KeyboardShortcuts';
+import { useKeyboardNavigation } from '@/app/hooks/useKeyboardNavigation';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -16,6 +17,8 @@ export default function MainLayout({
   description,
   headerActions,
 }: MainLayoutProps) {
+  useKeyboardNavigation(); // ADD THIS
+
   return (
     <div className="min-h-screen bg-gray-50">
       <Sidebar />
@@ -27,6 +30,8 @@ export default function MainLayout({
           {children}
         </main>
       </div>
+
+      <KeyboardShortcuts />
     </div>
   );
 }

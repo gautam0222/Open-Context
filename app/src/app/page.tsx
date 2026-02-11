@@ -10,6 +10,8 @@ import {
   ArrowTrendingUpIcon,
   ClockIcon,
   FolderIcon,
+  CloudArrowUpIcon,  
+  ChatBubbleBottomCenterTextIcon,
 } from '@heroicons/react/24/outline';
 
 interface Stats {
@@ -172,17 +174,37 @@ export default function Dashboard() {
         </div>
 
         {/* Quick Actions */}
-        <div className="space-y-6">
-          {/* Search Card */}
-          <Link href="/search" className="card p-6 hover:shadow-md transition-shadow block group">
-            <div className="w-12 h-12 bg-brand-50 rounded-xl flex items-center justify-center mb-4 group-hover:bg-brand-100 transition-colors">
-              <MagnifyingGlassIcon className="w-6 h-6 text-brand-600" />
-            </div>
-            <h3 className="font-semibold text-gray-900 mb-2">Semantic Search</h3>
-            <p className="text-sm text-gray-600">
-              Find content by meaning, not just keywords
-            </p>
-          </Link>
+        {/* Quick Actions - Add this card */}
+<div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+  <Link href="/search" className="card p-6 hover:shadow-lg transition group">
+    <div className="w-12 h-12 bg-brand-100 rounded-xl flex items-center justify-center mb-4 group-hover:scale-110 transition">
+      <MagnifyingGlassIcon className="w-6 h-6 text-brand-600" />
+    </div>
+    <h3 className="font-semibold text-gray-900 mb-2">Semantic Search</h3>
+    <p className="text-sm text-gray-600">Find anything by meaning, not just keywords</p>
+  </Link>
+
+  <Link href="/upload" className="card p-6 hover:shadow-lg transition group border-2 border-green-200">
+    <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center mb-4 group-hover:scale-110 transition">
+      <CloudArrowUpIcon className="w-6 h-6 text-green-600" />
+    </div>
+    <div className="flex items-center gap-2 mb-2">
+      <h3 className="font-semibold text-gray-900">Upload Files</h3>
+      <span className="px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-700 rounded-full">
+        New
+      </span>
+    </div>
+    <p className="text-sm text-gray-600">PDF, DOCX, TXT - drag & drop support</p>
+  </Link>
+
+  <Link href="/chat" className="card p-6 hover:shadow-lg transition group">
+    <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center mb-4 group-hover:scale-110 transition">
+      <ChatBubbleBottomCenterTextIcon className="w-6 h-6 text-purple-600" />
+    </div>
+    <h3 className="font-semibold text-gray-900 mb-2">AI Chat</h3>
+    <p className="text-sm text-gray-600">Ask questions about your saved content</p>
+  </Link>
+</div>
 
           {/* AI Chat Card */}
           <div className="card p-6 relative overflow-hidden">
@@ -225,10 +247,10 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-      </div>
     </MainLayout>
   );
 }
+
 
 // Stat Card Component
 function StatCard({

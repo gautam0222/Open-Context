@@ -8,6 +8,8 @@ import cors from 'cors';
 import { chatWithContext, ChatMessage } from './rag';
 import dotenv from 'dotenv';
 import { db } from './database';
+import { SAMPLE_ARTICLES } from './sampleContent';
+import { InsertChunkData } from './database';
 import {
   insertDocument,
   updateDocument,
@@ -37,12 +39,27 @@ import {
   insertEntityRelationship,
   getEntityRelationships,
   getAllEntityRelationships,
+  insertCollection,
+  getAllCollections,
+  getCollectionById,
+  getChildCollections,
+  updateCollection,
+  deleteCollection,
+  addDocumentToCollection,
+  removeDocumentFromCollection,
+  getCollectionDocuments,
+  getDocumentCollections,
+  getCollectionStats,
+  Collection,
+  InsertCollection,
 } from './database';
 import { generateId } from '@open-context/shared';
 import { extractContent } from './extractor';
 import { chunkText, getChunkingStats } from './chunker';
 import { extractEntities, findCoOccurrences } from './nlp';
 import { generateInsights, buildTimeline, getReadingStats } from './insights';
+import multer from 'multer';
+import { processFile } from './fileProcessor';
 
 // Load environment variables
 dotenv.config();
@@ -419,6 +436,188 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   }
 });
 
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB max
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedTypes = ['.pdf', '.docx', '.txt', '.md'];
+    const fileExt = file.originalname.toLowerCase().split('.').pop();
+    
+    if (allowedTypes.some(type => type.includes(fileExt || ''))) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Allowed: PDF, DOCX, TXT, MD'));
+    }
+  },
+});
+
+// Upload single file
+app.post('/api/upload', upload.single('file'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    console.log(`📤 Uploading file: ${req.file.originalname}`);
+
+    // Process file
+    const processed = await processFile(req.file.buffer, req.file.originalname);
+
+    // Generate document ID
+    const docId = generateId('doc');
+
+    // Insert document
+    insertDocument({
+      id: docId,
+      url: `file://${req.file.originalname}`,
+      title: processed.title,
+      content: processed.content,
+      excerpt: processed.excerpt,
+      author: undefined,
+      site_name: 'Uploaded File',
+      word_count: processed.wordCount,
+    });
+
+    // Chunk content
+    const chunks = chunkText(processed.content, docId, {
+  chunkSize: 500,
+  overlap: 50,
+});
+
+    // Generate embeddings
+    console.log(`🧠 Generating embeddings for ${chunks.length} chunks...`);
+    const embeddingPromises = chunks.map(chunk =>
+  fetch('http://localhost:5000/embed', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: chunk.content }),
+  }).then(r => r.json())
+);
+
+    const embeddingResults = await Promise.all(embeddingPromises);
+
+    chunks.forEach((chunk, idx) => {
+  chunk.embedding = embeddingResults[idx].embedding;
+});
+
+insertChunks(chunks);
+
+    console.log(`✅ File uploaded successfully: ${processed.title}`);
+
+    res.json({
+      success: true,
+      document: {
+        id: docId,
+        title: processed.title,
+        wordCount: processed.wordCount,
+        chunks: chunks.length,
+        fileType: processed.fileType,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Upload error:', error);
+    res.status(500).json({
+      error: 'Upload failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Upload multiple files
+app.post('/api/upload/batch', upload.array('files', 20), async (req: Request, res: Response) => {
+  try {
+    const files = req.files as Express.Multer.File[];
+    
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    console.log(`📤 Batch uploading ${files.length} files...`);
+
+    const results = [];
+    const errors = [];
+
+    for (const file of files) {
+      try {
+        console.log(`  Processing: ${file.originalname}`);
+
+        // Process file
+        const processed = await processFile(file.buffer, file.originalname);
+
+        // Generate document ID
+        const docId = generateId('doc');
+
+        // Insert document
+        insertDocument({
+          id: docId,
+          url: `file://${file.originalname}`,
+          title: processed.title,
+          content: processed.content,
+          excerpt: processed.excerpt,
+          author: undefined,
+          site_name: 'Uploaded File',
+          word_count: processed.wordCount,
+        });
+
+        // Chunk and embed
+        const chunks = chunkText(processed.content, docId, {
+  chunkSize: 500,
+  overlap: 50,
+});
+        const embeddingPromises = chunks.map(chunk =>
+          fetch('http://localhost:5000/embed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: chunk.content }),
+          }).then(r => r.json())
+        );
+
+        const embeddingResults = await Promise.all(embeddingPromises);
+
+    chunks.forEach((chunk, idx) => {
+  chunk.embedding = embeddingResults[idx].embedding;
+});
+
+insertChunks(chunks);
+
+        results.push({
+          fileName: file.originalname,
+          title: processed.title,
+          wordCount: processed.wordCount,
+          success: true,
+        });
+
+        console.log(`  ✅ ${file.originalname}`);
+      } catch (error) {
+        console.error(`  ❌ ${file.originalname}:`, error);
+        errors.push({
+          fileName: file.originalname,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    console.log(`\n✅ Batch upload complete: ${results.length}/${files.length} successful\n`);
+
+    res.json({
+      success: true,
+      results,
+      errors: errors.length > 0 ? errors : undefined,
+      total: files.length,
+      successful: results.length,
+      failed: errors.length,
+    });
+  } catch (error) {
+    console.error('❌ Batch upload error:', error);
+    res.status(500).json({
+      error: 'Batch upload failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 // Get document by ID
 // Delete document endpoint
 app.delete('/api/documents/:id', (req: Request, res: Response) => {
@@ -625,6 +824,106 @@ app.get('/api/stats', (_req: Request, res: Response) => {
   }
 });
 
+// Import sample content (for onboarding)
+// Import sample content (for onboarding)
+app.post('/api/import/samples', async (_req: Request, res: Response) => {
+  try {
+    console.log('📦 Importing sample content...');
+
+    let importedCount = 0;
+    const errors: string[] = [];
+
+    for (const article of SAMPLE_ARTICLES) {
+      try {
+        const docId = generateId('doc');
+
+        // Insert document
+        insertDocument({
+          id: docId,
+          url: article.url,
+          title: article.title,
+          content: article.content,
+          excerpt: article.excerpt,
+          author: article.author,
+          site_name: article.site_name,
+          word_count: article.word_count,
+        });
+
+        console.log(`  📄 Processing: ${article.title}`);
+
+        // Chunk content - returns string[]
+        const chunkObjects = chunkText(article.content, docId, {
+  chunkSize: 500,
+  overlap: 50,
+});
+        const textChunks = chunkObjects.map(c => c.content);
+        console.log(`    Created ${textChunks.length} chunks`);
+
+        // Generate embeddings for each chunk
+        console.log(`    Generating embeddings...`);
+        const embeddingPromises = textChunks.map((chunkText: string) =>
+          fetch('http://localhost:5000/embed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: chunkText }),
+          })
+            .then(r => r.json())
+            .catch(err => {
+              console.error('Embedding error:', err);
+              return { embedding: [] };
+            })
+        );
+
+        const embeddingResults = await Promise.all(embeddingPromises);
+
+        // Insert chunks with embeddings
+        const chunkDataArray: InsertChunkData[] = [];
+        
+        for (let i = 0; i < textChunks.length; i++) {
+          const chunkText = textChunks[i];
+          const embedding = embeddingResults[i]?.embedding || [];
+
+          if (embedding.length > 0) {
+            chunkDataArray.push({
+              id: generateId('chunk'),
+              document_id: docId,
+              content: chunkText,
+              chunk_index: i,
+              char_count: chunkText.length,
+              embedding: embedding, // number[]
+            });
+          }
+        }
+
+        if (chunkDataArray.length > 0) {
+          insertChunks(chunkDataArray);
+          console.log(`    ✅ Saved ${chunkDataArray.length} chunks with embeddings`);
+        }
+
+        importedCount++;
+      } catch (error) {
+        console.error(`  ❌ Failed to import ${article.title}:`, error);
+        errors.push(article.title);
+      }
+    }
+
+    console.log(`\n✅ Successfully imported ${importedCount}/${SAMPLE_ARTICLES.length} sample articles\n`);
+
+    res.json({
+      success: true,
+      imported: importedCount,
+      total: SAMPLE_ARTICLES.length,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error) {
+    console.error('❌ Sample import error:', error);
+    res.status(500).json({
+      error: 'Failed to import samples',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 app.get('/api/documents/:id/highlights', (req: Request, res: Response) => {
   try {
     const highlights = getHighlightsByDocumentId(req.params.id);
@@ -802,6 +1101,204 @@ app.get('/api/documents/:id/notes', (req: Request, res: Response) => {
   } catch (error) {
     console.error('❌ Error fetching notes:', error);
     res.status(500).json({ error: 'Failed to fetch notes' });
+  }
+});
+
+// Get all collections (with tree structure)
+app.get('/api/collections', (_req: Request, res: Response) => {
+  try {
+    const collections = getAllCollections();
+    
+    // Build tree structure
+    const buildTree = (parentId: string | null = null): any[] => {
+      const children = collections.filter(c => c.parent_id === parentId);
+      return children.map(collection => ({
+        ...collection,
+        children: buildTree(collection.id),
+        stats: getCollectionStats(collection.id),
+      }));
+    };
+
+    const tree = buildTree(null);
+
+    res.json({
+      collections: tree,
+      total: collections.length,
+    });
+  } catch (error) {
+    console.error('❌ Get collections error:', error);
+    res.status(500).json({ error: 'Failed to get collections' });
+  }
+});
+
+// Get single collection
+app.get('/api/collections/:id', (req: Request, res: Response) => {
+  try {
+    const collection = getCollectionById(req.params.id);
+    
+    if (!collection) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    const documents = getCollectionDocuments(collection.id);
+    const stats = getCollectionStats(collection.id);
+    const children = getChildCollections(collection.id);
+
+    res.json({
+      collection,
+      documents,
+      stats,
+      children,
+    });
+  } catch (error) {
+    console.error('❌ Get collection error:', error);
+    res.status(500).json({ error: 'Failed to get collection' });
+  }
+});
+
+// Create collection
+app.post('/api/collections', (req: Request, res: Response) => {
+  try {
+    const { name, description, color, icon, parent_id } = req.body;
+
+    if (!name || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Collection name is required' });
+    }
+
+    const collectionId = generateId('col');
+
+    const newCollection: InsertCollection = {
+      id: collectionId,
+      name: name.trim(),
+      description: description || null,
+      color: color || '#6366f1',
+      icon: icon || '📁',
+      parent_id: parent_id || null,
+      created_at: Date.now(),
+    };
+
+    insertCollection(newCollection);
+
+    console.log(`✅ Created collection: ${name}`);
+
+    res.json({
+      success: true,
+      collection: {
+        ...newCollection,
+        stats: { documentCount: 0, totalWords: 0, lastUpdated: null },
+      },
+    });
+  } catch (error) {
+    console.error('❌ Create collection error:', error);
+    res.status(500).json({ error: 'Failed to create collection' });
+  }
+});
+
+// Update collection
+app.put('/api/collections/:id', (req: Request, res: Response) => {
+  try {
+    const collection = getCollectionById(req.params.id);
+    
+    if (!collection) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    const { name, description, color, icon, parent_id } = req.body;
+
+    updateCollection(req.params.id, {
+      ...(name && { name: name.trim() }),
+      ...(description !== undefined && { description }),
+      ...(color && { color }),
+      ...(icon && { icon }),
+      ...(parent_id !== undefined && { parent_id }),
+    });
+
+    console.log(`✅ Updated collection: ${req.params.id}`);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Update collection error:', error);
+    res.status(500).json({ error: 'Failed to update collection' });
+  }
+});
+
+// Delete collection
+app.delete('/api/collections/:id', (req: Request, res: Response) => {
+  try {
+    const collection = getCollectionById(req.params.id);
+    
+    if (!collection) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    deleteCollection(req.params.id);
+
+    console.log(`✅ Deleted collection: ${collection.name}`);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Delete collection error:', error);
+    res.status(500).json({ error: 'Failed to delete collection' });
+  }
+});
+
+// Add document to collection
+app.post('/api/collections/:id/documents', (req: Request, res: Response) => {
+  try {
+    const { document_id } = req.body;
+
+    if (!document_id) {
+      return res.status(400).json({ error: 'document_id is required' });
+    }
+
+    const collection = getCollectionById(req.params.id);
+    const document = getDocumentById(document_id);
+
+    if (!collection) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    if (!document) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+
+    addDocumentToCollection(req.params.id, document_id);
+
+    console.log(`✅ Added document to collection: ${document.title} → ${collection.name}`);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Add to collection error:', error);
+    res.status(500).json({ error: 'Failed to add document to collection' });
+  }
+});
+
+// Remove document from collection
+app.delete('/api/collections/:id/documents/:documentId', (req: Request, res: Response) => {
+  try {
+    removeDocumentFromCollection(req.params.id, req.params.documentId);
+
+    console.log(`✅ Removed document from collection`);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Remove from collection error:', error);
+    res.status(500).json({ error: 'Failed to remove document from collection' });
+  }
+});
+
+// Get document's collections
+app.get('/api/documents/:id/collections', (req: Request, res: Response) => {
+  try {
+    const collections = getDocumentCollections(req.params.id);
+
+    res.json({
+      collections,
+      count: collections.length,
+    });
+  } catch (error) {
+    console.error('❌ Get document collections error:', error);
+    res.status(500).json({ error: 'Failed to get document collections' });
   }
 });
 
@@ -1250,6 +1747,41 @@ ${document.content || 'No content available'}
     console.error('❌ Export error:', error);
     res.status(500).json({
       error: 'Failed to export document',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Delete all documents (DANGER!)
+app.delete('/api/documents/all', (_req: Request, res: Response) => {
+  try {
+    console.log('⚠️ Deleting ALL documents...');
+
+    const documents = getAllDocuments(10000);
+    let deletedCount = 0;
+
+    for (const doc of documents) {
+      try {
+        // Delete chunks first
+        deleteChunksByDocumentId(doc.id);
+        // Delete document
+        deleteDocument(doc.id);
+        deletedCount++;
+      } catch (error) {
+        console.error(`Failed to delete document ${doc.id}:`, error);
+      }
+    }
+
+    console.log(`✅ Deleted ${deletedCount} documents`);
+
+    res.json({
+      success: true,
+      deletedCount,
+    });
+  } catch (error) {
+    console.error('❌ Delete all error:', error);
+    res.status(500).json({
+      error: 'Failed to delete all documents',
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
