@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import MainLayout from '@/components/Layout/MainLayout';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
+import CollectionSelector from '@/components/Collections/CollectionSelector';
 import {
   MagnifyingGlassIcon,
   FunnelIcon,
@@ -37,6 +38,7 @@ export default function LibraryPage() {
   const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
   const [showActions, setShowActions] = useState<string | null>(null);
   const [allCollections, setAllCollections] = useState<any[]>([]);
+  const [selectedDocForCollection, setSelectedDocForCollection] = useState<string | null>(null);
 
   useEffect(() => {
     loadDocuments();
@@ -243,14 +245,15 @@ export default function LibraryPage() {
       {!loading && filteredDocuments.length > 0 && viewMode === 'grid' && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredDocuments.map((doc) => (
-            <DocumentCard
+          <DocumentCard
   key={doc.id}
   doc={doc}
   onDelete={() => handleDelete(doc)}
-  onAddToCollection={handleAddToCollection}
+  onOpenCollection={() => setSelectedDocForCollection(doc.id)}
   formatDate={formatDate}
   getDomain={getDomain}
 />
+
 
           ))}
         </div>
@@ -281,6 +284,18 @@ export default function LibraryPage() {
           </p>
         </div>
       )}
+
+      {selectedDocForCollection && (
+  <CollectionSelector
+    documentId={selectedDocForCollection}
+    onClose={() => setSelectedDocForCollection(null)}
+    onSuccess={() => {
+      setSelectedDocForCollection(null);
+      // optionally reload documents
+    }}
+  />
+)}
+
     </MainLayout>
   );
 }
@@ -289,13 +304,13 @@ export default function LibraryPage() {
 function DocumentCard({
   doc,
   onDelete,
-  onAddToCollection,
+  onOpenCollection,
   formatDate,
   getDomain,
 }: {
   doc: Document;
   onDelete: () => void;
-  onAddToCollection: (docId: string, collectionId: string) => void;
+  onOpenCollection: () => void;
   formatDate: (ts: number) => string;
   getDomain: (url: string) => string;
 }) {
@@ -320,17 +335,14 @@ function DocumentCard({
         <button
   onClick={(e) => {
     e.preventDefault();
-    // Show collections dropdown
-    const collectionId = prompt('Enter collection ID (or visit Collections page):');
-    if (collectionId) {
-      onAddToCollection(doc.id, collectionId);
-    }
+    onOpenCollection();
   }}
-  className="p-2 text-gray-400 hover:text-brand-600 rounded-lg hover:bg-gray-100"
+  className="p-2 text-gray-400 hover:text-brand-600 rounded-lg hover:bg-gray-100 transition"
   title="Add to collection"
 >
   <FolderPlusIcon className="w-4 h-4" />
 </button>
+
 
         {/* Menu */}
         <div className="relative">

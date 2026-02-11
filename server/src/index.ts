@@ -787,9 +787,13 @@ app.get('/api/documents/:id/chunks', (req: Request, res: Response) => {
 });
 
 // Get all captures/documents
-app.get('/api/captures', (_req: Request, res: Response) => {
+app.get('/api/captures', (req: Request, res: Response) => {
   try {
-    const documents = getAllDocuments(100);
+    const limit = req.query.limit
+      ? parseInt(req.query.limit as string, 10)
+      : 100;
+
+    const documents = getAllDocuments(limit);
     const stats = getDatabaseStats();
 
     res.json({
@@ -805,6 +809,7 @@ app.get('/api/captures', (_req: Request, res: Response) => {
     });
   }
 });
+
 
 // Database stats endpoint
 // Database stats endpoint (ENHANCED)

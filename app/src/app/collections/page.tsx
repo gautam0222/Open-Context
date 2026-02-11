@@ -13,17 +13,25 @@ import {
 import toast from 'react-hot-toast';
 import Link from 'next/link';
 
+interface CollectionStats {
+  documentCount: number;
+  totalWords: number;
+  lastUpdated: number | null;
+}
+
 interface CollectionNode {
   id: string;
   name: string;
   description: string | null;
   icon: string;
   color: string;
+  parent_id?: string | null;
   children: CollectionNode[];
-  stats: {
-    documentCount: number;
-    totalWords: number;
-  };
+  stats: CollectionStats;
+}
+
+interface SelectedCollection extends CollectionNode {
+  // Ensure stats is always present
 }
 
 interface Document {
@@ -36,7 +44,7 @@ interface Document {
 
 export default function CollectionsPage() {
   const [collections, setCollections] = useState<CollectionNode[]>([]);
-  const [selectedCollection, setSelectedCollection] = useState<CollectionNode | null>(null);
+  const [selectedCollection, setSelectedCollection] = useState<SelectedCollection | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -64,7 +72,19 @@ export default function CollectionsPage() {
     try {
       const response = await fetch(`http://localhost:3001/api/collections/${collectionId}`);
       const data = await response.json();
-      setSelectedCollection(data.collection);
+      
+      // Ensure stats exists with default values
+      const collectionWithStats: SelectedCollection = {
+        ...data.collection,
+        children: [],
+        stats: data.stats || {
+          documentCount: 0,
+          totalWords: 0,
+          lastUpdated: null,
+        },
+      };
+      
+      setSelectedCollection(collectionWithStats);
       setDocuments(data.documents || []);
     } catch (error) {
       console.error('Failed to load collection documents:', error);
@@ -92,7 +112,7 @@ export default function CollectionsPage() {
     const findCollection = (collections: CollectionNode[]): CollectionNode | null => {
       for (const col of collections) {
         if (col.id === id) return col;
-        if (col.children) {
+        if (col.children && col.children.length > 0) {
           const found = findCollection(col.children);
           if (found) return found;
         }
@@ -142,7 +162,7 @@ export default function CollectionsPage() {
 
       toast.success('Document removed from collection');
       loadCollectionDocuments(selectedCollection.id);
-      loadCollections(); // Refresh counts
+      loadCollections();
     } catch (error) {
       console.error('Remove error:', error);
       toast.error('Failed to remove document');
@@ -202,7 +222,7 @@ export default function CollectionsPage() {
         <div className="lg:col-span-3">
           {selectedCollection ? (
             <div className="card p-6 h-full overflow-y-auto">
-              {/* Collection Header */}
+              {/* Collection Header - FIXED */}
               <div className="flex items-start gap-4 mb-6 pb-6 border-b border-gray-200">
                 <div
                   className="w-16 h-16 rounded-xl flex items-center justify-center text-3xl flex-shrink-0"
