@@ -13,6 +13,7 @@ import toast from 'react-hot-toast';
 
 interface Message {
   role: 'user' | 'assistant';
+  reasoning?: string;
   content: string;
   sources?: Array<{
     documentId: string;
@@ -37,52 +38,70 @@ export default function ChatPage() {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim() || loading) return;
+  if (!input.trim() || loading) return;
 
-    const userMessage: Message = {
-      role: 'user',
-      content: input,
+  const userMessage: Message = {
+    role: 'user',
+    content: input,
+  };
+
+  setMessages(prev => [...prev, userMessage]);
+  setInput('');
+  setLoading(true);
+
+  try {
+    const history = messages.map(m => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    const response = await fetch('http://localhost:3001/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: input,
+        history,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Chat failed');
+    }
+
+    const data = await response.json();
+
+    const assistantMessage: Message = {
+      role: 'assistant',
+      content: data.answer,
+      sources: data.sources,
+      reasoning: data.reasoning,
     };
 
-    setMessages(prev => [...prev, userMessage]);
-    setInput('');
-    setLoading(true);
-
-    try {
-      const history = messages.map(m => ({
-        role: m.role,
-        content: m.content,
-      }));
-
-      const response = await fetch('http://localhost:3001/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: input,
-          history,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Chat failed');
+    setMessages(prev => [...prev, assistantMessage]);
+  } catch (error) {
+    console.error('Chat error:', error);
+    
+    // User-friendly error messages
+    let errorMessage = 'Failed to get answer.';
+    
+    if (error instanceof Error) {
+      if (error.message.includes('API key')) {
+        errorMessage = '🔑 OpenRouter API key not set. Add it in Settings!';
+      } else if (error.message.includes('Embedding server')) {
+        errorMessage = '⚠️ Embedding server not running. Start: python scripts/embedding_server.py';
+      } else if (error.message.includes('No relevant information')) {
+        errorMessage = '📚 No relevant documents found. Try capturing content related to your question.';
+      } else {
+        errorMessage = error.message;
       }
-
-      const data = await response.json();
-
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: data.answer,
-        sources: data.sources,
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
-    } catch (error) {
-      console.error('Chat error:', error);
-      toast.error('Failed to get answer. Make sure you have documents captured and API key set.');
-    } finally {
-      setLoading(false);
     }
-  };
+    
+    toast.error(errorMessage, { duration: 5000 });
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {

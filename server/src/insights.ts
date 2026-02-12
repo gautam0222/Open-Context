@@ -127,37 +127,45 @@ export async function generateInsights(): Promise<Insight[]> {
 /**
  * Build timeline of learning
  */
-export function buildTimeline(): Timeline[] {
+export function buildTimeline(days: number = 60): Timeline[] {
   const documents = getAllDocuments(1000);
+
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
   const timelineMap = new Map<string, Timeline>();
 
-  documents.forEach(doc => {
-    const date = new Date(doc.created_at).toISOString().split('T')[0]; // YYYY-MM-DD
-    
-    if (!timelineMap.has(date)) {
-      timelineMap.set(date, {
-        date,
-        documents: [],
-        topicsLearned: [],
-        totalWords: 0,
+  documents
+    .filter(doc => doc.created_at >= cutoff)
+    .forEach(doc => {
+      const date = new Date(doc.created_at)
+        .toISOString()
+        .split('T')[0];
+
+      if (!timelineMap.has(date)) {
+        timelineMap.set(date, {
+          date,
+          documents: [],
+          topicsLearned: [],
+          totalWords: 0,
+        });
+      }
+
+      const timeline = timelineMap.get(date)!;
+      timeline.documents.push({
+        id: doc.id,
+        title: doc.title || 'Untitled',
+        url: doc.url,
+        word_count: doc.word_count || 0,
+        topics: [],
       });
-    }
-
-    const timeline = timelineMap.get(date)!;
-    timeline.documents.push({
-      id: doc.id,
-      title: doc.title || 'Untitled',
-      url: doc.url,
-      word_count: doc.word_count || 0,
-      topics: [], // We'll enhance this later
+      timeline.totalWords += doc.word_count || 0;
     });
-    timeline.totalWords += doc.word_count || 0;
-  });
 
-  return Array.from(timelineMap.values()).sort((a, b) => 
-    new Date(b.date).getTime() - new Date(a.date).getTime()
-  );
+  return Array.from(timelineMap.values())
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 }
+
+
 
 /**
  * Get reading statistics

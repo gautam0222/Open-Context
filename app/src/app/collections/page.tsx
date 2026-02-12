@@ -324,6 +324,10 @@ export default function CollectionsPage() {
         onSuccess={() => {
           loadCollections();
           setShowModal(false);
+
+          toast.success('🎉 Collection created!', {
+      icon: '📁',
+    });
         }}
         editingCollection={editingCollection}
         parentId={parentId}

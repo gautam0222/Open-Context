@@ -755,6 +755,11 @@ export function deleteCollection(id: string): void {
 /**
  * Add document to collection
  */
+
+/**
+ * Generate unique ID with prefix
+ */
+
 export function addDocumentToCollection(collectionId: string, documentId: string): void {
   const id = generateId('col_doc');
   

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import MainLayout from '@/components/Layout/MainLayout';
+import TimelineHeatmap from '@/components/Analytics/TimelineHeatmap';
 import Link from 'next/link';
 import {
   FireIcon,
@@ -41,6 +42,7 @@ interface ReadingStats {
   readingHours: number;
 }
 
+
 export default function AnalyticsPage() {
   const [insights, setInsights] = useState<Insight[]>([]);
   const [timeline, setTimeline] = useState<Timeline[]>([]);
@@ -56,7 +58,7 @@ export default function AnalyticsPage() {
     try {
       const [insightsRes, timelineRes, statsRes] = await Promise.all([
         fetch('http://localhost:3001/api/insights'),
-        fetch('http://localhost:3001/api/timeline'),
+        fetch('http://localhost:3001/api/timeline?days=30'),
         fetch('http://localhost:3001/api/stats/reading'),
       ]);
 
@@ -85,6 +87,11 @@ export default function AnalyticsPage() {
     
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
+  const heatmapData =
+  timeline?.map((day) => ({
+    date: day.date,
+    count: day.documents.length,
+  })) || [];
 
   if (loading) {
     return (
@@ -216,13 +223,17 @@ export default function AnalyticsPage() {
               <h2 className="text-xl font-bold text-gray-900">Learning Timeline</h2>
             </div>
 
+            <div className="mb-6">
+    <TimelineHeatmap data={heatmapData} />
+  </div>
+
             {timeline.length === 0 ? (
               <div className="text-center py-8">
                 <p className="text-gray-500">Your learning journey will appear here</p>
               </div>
             ) : (
               <div className="space-y-6">
-                {timeline.slice(0, 10).map((day, idx) => (
+                {timeline.slice(0, 3).map((day, idx) => (
                   <div key={idx} className="relative">
                     {/* Timeline dot */}
                     <div className="absolute left-0 top-2 w-3 h-3 bg-brand-600 rounded-full"></div>
@@ -241,7 +252,7 @@ export default function AnalyticsPage() {
                       </div>
 
                       <div className="space-y-2">
-                        {day.documents.map(doc => (
+                        {day.documents.slice(0, 2).map(doc => (
                           <Link
                             key={doc.id}
                             href={`/library/${doc.id}`}
@@ -255,6 +266,11 @@ export default function AnalyticsPage() {
                             </div>
                           </Link>
                         ))}
+                        {day.documents.length > 2 && (
+    <div className="text-xs text-gray-500 ml-3">
+      +{day.documents.length - 2} more
+    </div>
+  )}
                       </div>
                     </div>
                   </div>

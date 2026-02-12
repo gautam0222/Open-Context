@@ -81,54 +81,129 @@ export default function DashboardPage() {
     >
       {/* Stats Overview */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-        <div className="card p-6 bg-gradient-to-br from-brand-500 to-brand-600 text-white">
-          <div className="flex items-center justify-between mb-2">
-            <BookOpenIcon className="w-8 h-8 opacity-80" />
-            <div className="text-right">
-              <div className="text-3xl font-bold">
-                {loading ? '...' : stats?.totalDocuments || 0}
-              </div>
-              <div className="text-sm opacity-80">Documents</div>
-            </div>
-          </div>
-        </div>
 
-        <div className="card p-6">
-          <div className="flex items-center justify-between mb-2">
-            <DocumentTextIcon className="w-8 h-8 text-gray-400" />
-            <div className="text-right">
-              <div className="text-3xl font-bold text-gray-900">
-                {loading ? '...' : ((stats?.totalWords || 0) / 1000).toFixed(1)}K
-              </div>
-              <div className="text-sm text-gray-600">Words</div>
+  {/* Documents */}
+  <div className="card p-6 bg-gradient-to-br from-brand-500 to-brand-600 text-white">
+    <div className="flex items-center justify-between mb-2">
+      <BookOpenIcon className="w-8 h-8 opacity-80" />
+      <div className="text-right">
+        {loading ? (
+          <>
+            <div className="w-16 h-8 bg-white/20 rounded animate-pulse mb-2"></div>
+            <div className="w-20 h-4 bg-white/20 rounded animate-pulse"></div>
+          </>
+        ) : (
+          <>
+            <div className="text-3xl font-bold">
+              {stats?.totalDocuments || 0}
             </div>
-          </div>
-        </div>
-
-        <div className="card p-6">
-          <div className="flex items-center justify-between mb-2">
-            <SparklesIcon className="w-8 h-8 text-gray-400" />
-            <div className="text-right">
-              <div className="text-3xl font-bold text-gray-900">
-                {loading ? '...' : stats?.totalChunks || 0}
-              </div>
-              <div className="text-sm text-gray-600">Chunks</div>
-            </div>
-          </div>
-        </div>
-
-        <div className="card p-6">
-          <div className="flex items-center justify-between mb-2">
-            <ClockIcon className="w-8 h-8 text-gray-400" />
-            <div className="text-right">
-              <div className="text-lg font-bold text-gray-900">
-                {loading ? '...' : stats?.lastCaptured ? formatDate(stats.lastCaptured) : 'Never'}
-              </div>
-              <div className="text-sm text-gray-600">Last Capture</div>
-            </div>
-          </div>
-        </div>
+            <div className="text-sm opacity-80">Documents</div>
+          </>
+        )}
       </div>
+    </div>
+  </div>
+
+  {/* Words */}
+  <div className="card p-6">
+    <div className="flex items-center justify-between mb-2">
+      <DocumentTextIcon className="w-8 h-8 text-gray-400" />
+      <div className="text-right">
+        {loading ? (
+          <>
+            <div className="w-16 h-8 bg-gray-200 rounded animate-pulse mb-2"></div>
+            <div className="w-16 h-4 bg-gray-200 rounded animate-pulse"></div>
+          </>
+        ) : (
+          <>
+            <div className="text-3xl font-bold text-gray-900">
+              {((stats?.totalWords || 0) / 1000).toFixed(1)}K
+            </div>
+            <div className="text-sm text-gray-600">Words</div>
+          </>
+        )}
+      </div>
+    </div>
+  </div>
+
+  {/* Chunks */}
+  <div className="card p-6">
+    <div className="flex items-center justify-between mb-2">
+      <SparklesIcon className="w-8 h-8 text-gray-400" />
+      <div className="text-right">
+        {loading ? (
+          <>
+            <div className="w-16 h-8 bg-gray-200 rounded animate-pulse mb-2"></div>
+            <div className="w-16 h-4 bg-gray-200 rounded animate-pulse"></div>
+          </>
+        ) : (
+          <>
+            <div className="text-3xl font-bold text-gray-900">
+              {stats?.totalChunks || 0}
+            </div>
+            <div className="text-sm text-gray-600">Chunks</div>
+          </>
+        )}
+      </div>
+    </div>
+  </div>
+
+  {/* Last Capture */}
+  <div className="card p-6">
+    <div className="flex items-center justify-between mb-2">
+      <ClockIcon className="w-8 h-8 text-gray-400" />
+      <div className="text-right">
+        {loading ? (
+          <>
+            <div className="w-24 h-6 bg-gray-200 rounded animate-pulse mb-2"></div>
+            <div className="w-20 h-4 bg-gray-200 rounded animate-pulse"></div>
+          </>
+        ) : (
+          <>
+            <div className="text-lg font-bold text-gray-900">
+              {stats?.lastCaptured
+                ? formatDate(stats.lastCaptured)
+                : 'Never'}
+            </div>
+            <div className="text-sm text-gray-600">Last Capture</div>
+          </>
+        )}
+      </div>
+    </div>
+  </div>
+
+</div>
+
+
+      {/* Empty State - Show when no documents */}
+{!loading && stats && stats.totalDocuments === 0 && (
+  <div className="card p-12 text-center mb-8">
+    <div className="w-20 h-20 bg-brand-50 rounded-full flex items-center justify-center mx-auto mb-6">
+      <SparklesIcon className="w-10 h-10 text-brand-600" />
+    </div>
+    <h2 className="text-2xl font-bold text-gray-900 mb-3">
+      Welcome to Open Context! 🎉
+    </h2>
+    <p className="text-gray-600 mb-8 max-w-md mx-auto">
+      Your personal AI-powered knowledge base. Start by uploading documents or capturing web pages.
+    </p>
+    <div className="flex gap-4 justify-center">
+      <Link href="/upload" className="btn-primary">
+        <CloudArrowUpIcon className="w-4 h-4" />
+        Upload Documents
+      </Link>
+      <button
+        onClick={() => {
+          localStorage.removeItem('onboarding_completed');
+          window.location.reload();
+        }}
+        className="btn-secondary"
+      >
+        Restart Tutorial
+      </button>
+    </div>
+  </div>
+)}
 
       {/* Quick Actions - HORIZONTAL ROW */}
       <div className="mb-8">

@@ -3,6 +3,7 @@ import { searchSimilarChunks } from './search';
 import { getSearchStats } from './search';
 import { checkEmbeddingServer } from './embedder';
 import { ensureDbReady, getTotalChunkCount } from './database';
+import { extractEntitiesFromDocuments, ConceptGraph } from './advancedNLP';
 import { generateEmbeddingsBatch } from './embedder';
 import cors from 'cors';
 import { chatWithContext, ChatMessage } from './rag';
@@ -53,10 +54,17 @@ import {
   Collection,
   InsertCollection,
 } from './database';
+import {
+  extractTopicsFromDocuments,
+  findTopicConnections,
+  getTopicTimeline,
+  Topic,
+} from './topicExtraction';
 import { generateId } from '@open-context/shared';
 import { extractContent } from './extractor';
 import { chunkText, getChunkingStats } from './chunker';
 import { extractEntities, findCoOccurrences } from './nlp';
+
 import { generateInsights, buildTimeline, getReadingStats } from './insights';
 import multer from 'multer';
 import { processFile } from './fileProcessor';
@@ -380,11 +388,14 @@ app.get('/api/insights', async (_req: Request, res: Response) => {
 });
 
 // Get learning timeline
-app.get('/api/timeline', (_req: Request, res: Response) => {
+app.get('/api/timeline', (req: Request, res: Response) => {
   try {
-    console.log('📅 Building timeline...');
-    const timeline = buildTimeline();
-    
+    const days = req.query.days
+      ? parseInt(req.query.days as string, 10)
+      : 90; // default 90 days
+
+    const timeline = buildTimeline(days);
+
     res.json({
       timeline,
       count: timeline.length,
@@ -393,10 +404,10 @@ app.get('/api/timeline', (_req: Request, res: Response) => {
     console.error('❌ Timeline error:', error);
     res.status(500).json({
       error: 'Failed to build timeline',
-      message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 });
+
 
 // Get reading statistics
 app.get('/api/stats/reading', (_req: Request, res: Response) => {
@@ -1351,6 +1362,165 @@ app.delete('/api/notes/:id', (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/knowledge-graph', async (_req: Request, res: Response) => {
+  try {
+    console.log('🕸️ Building knowledge graph...');
+
+    // Extract topics
+    const topics = await extractTopicsFromDocuments();
+
+    // Find connections
+    const connections = findTopicConnections(topics);
+
+    // Get timeline
+    const timelineMap = getTopicTimeline(topics);
+    const timeline = Array.from(timelineMap.entries()).map(([month, topics]) => ({
+      month,
+      topics: topics.length,
+      topicNames: topics.map(t => t.name),
+    }));
+
+    // Category distribution
+    const categoryDistribution = topics.reduce((acc, topic) => {
+      acc[topic.category] = (acc[topic.category] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    // Calculate insights
+    const insights = generateKnowledgeInsights(topics, connections);
+
+    console.log(`✅ Graph built: ${topics.length} topics, ${connections.length} connections`);
+
+    res.json({
+      topics,
+      connections,
+      timeline,
+      categoryDistribution,
+      insights,
+      stats: {
+        totalTopics: topics.length,
+        totalConnections: connections.length,
+        totalDocuments: topics.reduce((sum, t) => sum + t.documentCount, 0),
+        totalWords: topics.reduce((sum, t) => sum + t.totalWords, 0),
+      },
+    });
+  } catch (error) {
+    console.error('❌ Knowledge graph error:', error);
+    res.status(500).json({
+      error: 'Failed to build knowledge graph',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Get single topic details
+app.get('/api/knowledge-graph/topics/:id', async (req: Request, res: Response) => {
+  try {
+    const topics = await extractTopicsFromDocuments();
+    const topic = topics.find(t => t.id === req.params.id);
+
+    if (!topic) {
+      return res.status(404).json({ error: 'Topic not found' });
+    }
+
+    // Get documents in this topic
+    const documents = topic.documentIds.map(id => getDocumentById(id)).filter(Boolean);
+
+    // Get related topics
+    const connections = findTopicConnections(topics);
+    const relatedTopics = connections
+      .filter(c => c.topic1 === topic.id || c.topic2 === topic.id)
+      .map(c => {
+        const relatedId = c.topic1 === topic.id ? c.topic2 : c.topic1;
+        const relatedTopic = topics.find(t => t.id === relatedId);
+        return {
+          ...relatedTopic,
+          connectionStrength: c.strength,
+          sharedDocuments: c.sharedDocuments,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => (b.connectionStrength || 0) - (a.connectionStrength || 0));
+
+    res.json({
+      topic,
+      documents,
+      relatedTopics,
+    });
+  } catch (error) {
+    console.error('❌ Topic details error:', error);
+    res.status(500).json({ error: 'Failed to get topic details' });
+  }
+});
+
+/**
+ * Generate AI insights about the knowledge graph
+ */
+function generateKnowledgeInsights(topics: Topic[], connections: any[]): any[] {
+  const insights = [];
+
+  // Largest topic
+  const largestTopic = topics.sort((a, b) => b.documentCount - a.documentCount)[0];
+  if (largestTopic) {
+    insights.push({
+      type: 'largest_topic',
+      title: 'Your Biggest Interest',
+      description: `You have ${largestTopic.documentCount} documents about ${largestTopic.name}`,
+      data: largestTopic,
+      icon: '🎯',
+    });
+  }
+
+  // Most connected topic
+  const topicConnectionCounts = new Map<string, number>();
+  connections.forEach(conn => {
+    topicConnectionCounts.set(conn.topic1, (topicConnectionCounts.get(conn.topic1) || 0) + 1);
+    topicConnectionCounts.set(conn.topic2, (topicConnectionCounts.get(conn.topic2) || 0) + 1);
+  });
+
+  const [mostConnectedId, connectionCount] = Array.from(topicConnectionCounts.entries())
+    .sort((a, b) => b[1] - a[1])[0] || [];
+
+  if (mostConnectedId) {
+    const topic = topics.find(t => t.id === mostConnectedId);
+    if (topic) {
+      insights.push({
+        type: 'most_connected',
+        title: 'Hub of Knowledge',
+        description: `${topic.name} connects to ${connectionCount} other topics`,
+        data: topic,
+        icon: '🕸️',
+      });
+    }
+  }
+
+  // Category diversity
+  const categories = new Set(topics.map(t => t.category));
+  insights.push({
+    type: 'diversity',
+    title: 'Knowledge Diversity',
+    description: `You're exploring ${categories.size} different areas of knowledge`,
+    data: { categories: Array.from(categories) },
+    icon: '🌈',
+  });
+
+  // Recent growth
+  const lastMonth = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const recentTopics = topics.filter(t => t.lastUpdated > lastMonth);
+  
+  if (recentTopics.length > 0) {
+    insights.push({
+      type: 'recent_growth',
+      title: 'Active Learning',
+      description: `${recentTopics.length} topics updated in the last 30 days`,
+      data: { recentTopics: recentTopics.map(t => t.name) },
+      icon: '📈',
+    });
+  }
+
+  return insights;
+}
+
 // Search endpoint (placeholder for Phase 2)
 // Search endpoint (SEMANTIC SEARCH)
 app.post('/api/search', async (req: Request, res: Response) => {
@@ -1394,6 +1564,179 @@ app.get('/api/documents', (_req: Request, res: Response) => {
     });
   }
 });
+
+app.get('/api/concept-graph', async (_req: Request, res: Response) => {
+  try {
+    console.log('🧠 Building concept graph with NLP...');
+
+    const conceptGraph = await extractEntitiesFromDocuments();
+
+    // Generate advanced insights
+    const insights = generateConceptInsights(conceptGraph);
+
+    console.log(`✅ Concept graph built: ${conceptGraph.entities.length} entities, ${conceptGraph.relationships.length} relationships`);
+
+    res.json({
+      ...conceptGraph,
+      insights,
+      stats: {
+        totalEntities: conceptGraph.entities.length,
+        totalRelationships: conceptGraph.relationships.length,
+        totalClusters: conceptGraph.clusters.length,
+        entityTypes: getEntityTypeDistribution(conceptGraph.entities),
+      },
+    });
+  } catch (error) {
+    console.error('❌ Concept graph error:', error);
+    res.status(500).json({
+      error: 'Failed to build concept graph',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// Get entity details
+app.get('/api/concept-graph/entities/:id', async (req: Request, res: Response) => {
+  try {
+    const conceptGraph = await extractEntitiesFromDocuments();
+    const entity = conceptGraph.entities.find(e => e.id === req.params.id);
+
+    if (!entity) {
+      return res.status(404).json({ error: 'Entity not found' });
+    }
+
+    // Get related entities
+    const relatedRelationships = conceptGraph.relationships.filter(
+      r => r.source === entity.id || r.target === entity.id
+    );
+
+    const relatedEntityIds = new Set<string>();
+    relatedRelationships.forEach(r => {
+      if (r.source === entity.id) relatedEntityIds.add(r.target);
+      if (r.target === entity.id) relatedEntityIds.add(r.source);
+    });
+
+    const relatedEntities = conceptGraph.entities.filter(e =>
+      relatedEntityIds.has(e.id)
+    );
+
+    // Get documents
+    const documents = entity.documentIds.map(id => getDocumentById(id)).filter(Boolean);
+
+    res.json({
+      entity,
+      relatedEntities,
+      relationships: relatedRelationships,
+      documents,
+    });
+  } catch (error) {
+    console.error('❌ Entity details error:', error);
+    res.status(500).json({ error: 'Failed to get entity details' });
+  }
+});
+
+/**
+ * Generate insights about the concept graph
+ */
+function generateConceptInsights(graph: ConceptGraph): any[] {
+  const insights = [];
+
+  // Most important entity
+  const topEntity = graph.entities[0];
+  if (topEntity) {
+    insights.push({
+      type: 'key_entity',
+      title: 'Key Concept',
+      description: `${topEntity.name} appears ${topEntity.count} times across ${topEntity.documentIds.length} documents`,
+      data: topEntity,
+      icon: '🎯',
+      importance: 10,
+    });
+  }
+
+  // Most connected entity
+  const connectionCounts = new Map<string, number>();
+  graph.relationships.forEach(r => {
+    connectionCounts.set(r.source, (connectionCounts.get(r.source) || 0) + 1);
+    connectionCounts.set(r.target, (connectionCounts.get(r.target) || 0) + 1);
+  });
+
+  const [mostConnectedId, connectionCount] = Array.from(connectionCounts.entries())
+    .sort((a, b) => b[1] - a[1])[0] || [];
+
+  if (mostConnectedId) {
+    const entity = graph.entities.find(e => e.id === mostConnectedId);
+    if (entity) {
+      insights.push({
+        type: 'hub',
+        title: 'Knowledge Hub',
+        description: `${entity.name} connects to ${connectionCount} other concepts`,
+        data: entity,
+        icon: '🕸️',
+        importance: 9,
+      });
+    }
+  }
+
+  // Entity diversity
+  const typeDistribution = getEntityTypeDistribution(graph.entities);
+  insights.push({
+    type: 'diversity',
+    title: 'Concept Diversity',
+    description: `${Object.keys(typeDistribution).length} types of entities discovered`,
+    data: typeDistribution,
+    icon: '🌈',
+    importance: 8,
+  });
+
+  // Strong relationships
+  const strongRelationships = graph.relationships
+    .filter(r => r.strength >= 3)
+    .sort((a, b) => b.strength - a.strength)
+    .slice(0, 3);
+
+  if (strongRelationships.length > 0) {
+    insights.push({
+      type: 'connections',
+      title: 'Strong Connections',
+      description: `Found ${strongRelationships.length} strong concept connections`,
+      data: strongRelationships,
+      icon: '🔗',
+      importance: 7,
+    });
+  }
+
+  // Recent entities
+  const recentThreshold = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const recentEntities = graph.entities.filter(e => {
+    const recentDocs = e.documentIds.filter(docId => {
+      const doc = getDocumentById(docId);
+      return doc && doc.created_at > recentThreshold;
+    });
+    return recentDocs.length > 0;
+  });
+
+  if (recentEntities.length > 0) {
+    insights.push({
+      type: 'recent',
+      title: 'New Discoveries',
+      description: `${recentEntities.length} new concepts in the last 30 days`,
+      data: recentEntities.slice(0, 5),
+      icon: '✨',
+      importance: 6,
+    });
+  }
+
+  return insights.sort((a, b) => b.importance - a.importance);
+}
+
+function getEntityTypeDistribution(entities: any[]): Record<string, number> {
+  return entities.reduce((acc, entity) => {
+    acc[entity.type] = (acc[entity.type] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+}
+
 
 // Get graph data (placeholder for Phase 3)
 // Get graph data (nodes and edges) - OPTIMIZED

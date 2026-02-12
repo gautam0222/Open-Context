@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import MainLayout from '@/components/Layout/MainLayout';
+import KeyboardHint from '@/components/UI/KeyboardHint';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import {
@@ -32,45 +33,57 @@ export default function SearchPage() {
   const [limit, setLimit] = useState(10);
 
   const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
+  e.preventDefault();
 
-    if (!query.trim()) {
-      toast.error('Please enter a search query');
-      return;
+  if (!query.trim()) {
+    toast.error('Please enter a search query');
+    return;
+  }
+
+  setLoading(true);
+  setHasSearched(true);
+  const startTime = Date.now();
+
+  try {
+    const response = await fetch('http://localhost:3001/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, limit }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Search failed');
     }
 
-    setLoading(true);
-    setHasSearched(true);
-    const startTime = Date.now();
+    const data = await response.json();
+    setResults(data.results || []);
+    setSearchTime(Date.now() - startTime);
 
-    try {
-      const response = await fetch('http://localhost:3001/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, limit }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Search failed');
-      }
-
-      const data = await response.json();
-      setResults(data.results || []);
-      setSearchTime(Date.now() - startTime);
-
-      if (data.results?.length > 0) {
-        toast.success(`Found ${data.results.length} results!`);
+    if (data.results?.length > 0) {
+      toast.success(`Found ${data.results.length} results!`);
+    } else {
+      toast('No results found', { icon: '🤷' });
+    }
+  } catch (error) {
+    console.error('Search failed:', error);
+    
+    // Better error messages
+    if (error instanceof Error) {
+      if (error.message.includes('Embedding server')) {
+        toast.error('⚠️ Embedding server is not running. Start it with: python scripts/embedding_server.py');
       } else {
-        toast('No results found', { icon: '🤷' });
+        toast.error(error.message);
       }
-    } catch (error) {
-      console.error('Search failed:', error);
+    } else {
       toast.error('Search failed. Make sure the server is running.');
-      setResults([]);
-    } finally {
-      setLoading(false);
     }
-  };
+    
+    setResults([]);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const exampleQueries = [
     'artificial intelligence',
@@ -308,6 +321,11 @@ export default function SearchPage() {
                 <strong>💡 Pro Tip:</strong> Try searching for concepts or questions, not just keywords. For example: "how to be productive" instead of just "productivity"
               </div>
             </div>
+            {/* Keyboard Shortcut Hint */}
+<div className="mt-6 flex justify-center">
+  <KeyboardHint keys="⌘ + /" action="Quick search from anywhere" />
+</div>
+
           </div>
         )}
 

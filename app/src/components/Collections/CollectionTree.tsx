@@ -97,7 +97,17 @@ export default function CollectionTree({
           <span className="flex-1 font-medium text-sm truncate">{node.name}</span>
 
           {/* Count */}
-          <span className="text-xs text-gray-500">{node.stats.documentCount}</span>
+          {/* Count Badge - Make it prominent */}
+<span
+  className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+    isSelected
+      ? 'bg-brand-200 text-brand-800'
+      : 'bg-gray-200 text-gray-700'
+  }`}
+>
+  {node.stats.documentCount}
+</span>
+
 
           {/* Actions */}
           <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1">
