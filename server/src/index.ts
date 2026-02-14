@@ -53,6 +53,30 @@ import {
   getCollectionStats,
   Collection,
   InsertCollection,
+  upsertUserProfile,
+  getUserProfile,
+  addUserXP,
+  createLearningGoal,
+  updateGoalProgress,
+  getUserGoals,
+  createNotification,
+  seedAchievements,
+  createWorkspace,
+  getUserWorkspaces,
+  addWorkspaceMember,
+  shareCollectionWithWorkspace,
+  getWorkspaceActivity,
+  addActivityToFeed,
+  getPublicActivity,
+  UserProfile,
+  LearningGoal,
+  Workspace,
+  getOrCreateConversation,
+  getUserConversations,
+  getConversationMessages,
+  sendMessage,
+  markMessagesAsRead,
+  getUnreadCount,
 } from './database';
 import {
   extractTopicsFromDocuments,
@@ -71,6 +95,7 @@ import { processFile } from './fileProcessor';
 
 // Load environment variables
 dotenv.config();
+seedAchievements();
 
 const app: Express = express();
 const PORT = process.env.PORT || 3001;
@@ -1594,6 +1619,743 @@ app.get('/api/concept-graph', async (_req: Request, res: Response) => {
     });
   }
 });
+app.get('/api/profile', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default'; // TODO: Replace with real auth
+    let profile = getUserProfile(userId);
+
+    if (!profile) {
+      // Create default profile
+      profile = {
+        user_id: userId,
+        username: 'anonymous',
+        display_name: 'Anonymous User',
+        avatar: null,
+        bio: null,
+        level: 1,
+        xp: 0,
+        coins: 0,
+        streak_days: 0,
+        last_active: null,
+        total_documents: 0,
+        total_words_read: 0,
+        achievements: null,
+        preferences: null,
+        is_public: 1,
+        created_at: Date.now(),
+      };
+      upsertUserProfile(profile);
+    }
+
+    res.json({ profile });
+  } catch (error) {
+    console.error('❌ Get profile error:', error);
+    res.status(500).json({ error: 'Failed to get profile' });
+  }
+});
+
+// Update user profile
+app.put('/api/profile', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    const updates = req.body;
+
+    const profile = getUserProfile(userId);
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    const updatedProfile = {
+      ...profile,
+      ...updates,
+    };
+
+    upsertUserProfile(updatedProfile);
+
+    res.json({ success: true, profile: updatedProfile });
+  } catch (error) {
+    console.error('❌ Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// Get unlocked achievements
+app.get('/api/achievements/unlocked', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    
+    const result = db.exec(`
+      SELECT a.*, ua.unlocked_at, ua.progress
+      FROM achievements a
+      INNER JOIN user_achievements ua ON a.id = ua.achievement_id
+      WHERE ua.user_id = ?
+      ORDER BY ua.unlocked_at DESC
+    `, [userId]);
+
+    if (result.length === 0) {
+      return res.json({ achievements: [] });
+    }
+
+    const columns = result[0].columns;
+    const achievements = result[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ achievements });
+  } catch (error) {
+    console.error('❌ Get achievements error:', error);
+    res.status(500).json({ error: 'Failed to get achievements' });
+  }
+});
+
+// Get all achievements (locked and unlocked)
+app.get('/api/achievements', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    
+    // Get all achievements
+    const allResult = db.exec('SELECT * FROM achievements ORDER BY rarity DESC, xp_reward DESC');
+    
+    if (allResult.length === 0) {
+      return res.json({ achievements: [] });
+    }
+
+    const columns = allResult[0].columns;
+    const allAchievements = allResult[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    // Get unlocked achievements
+    const unlockedResult = db.exec(
+      'SELECT achievement_id, unlocked_at FROM user_achievements WHERE user_id = ?',
+      [userId]
+    );
+
+    const unlocked = new Map();
+    if (unlockedResult.length > 0) {
+      unlockedResult[0].values.forEach(row => {
+        unlocked.set(row[0], row[1]);
+      });
+    }
+
+    // Merge data
+    const achievements = allAchievements.map(ach => ({
+      ...ach,
+      unlocked: unlocked.has(ach.id),
+      unlocked_at: unlocked.get(ach.id) || null,
+    }));
+
+    res.json({ achievements });
+  } catch (error) {
+    console.error('❌ Get all achievements error:', error);
+    res.status(500).json({ error: 'Failed to get achievements' });
+  }
+});
+
+// Delete notification
+app.delete('/api/notifications/:id', (req: Request, res: Response) => {
+  try {
+    db.exec('DELETE FROM notifications WHERE id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Delete notification error:', error);
+    res.status(500).json({ error: 'Failed to delete notification' });
+  }
+});
+
+// ============= LEARNING GOALS =============
+
+// Get user goals
+app.get('/api/goals', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    const goals = getUserGoals(userId);
+
+    res.json({ goals });
+  } catch (error) {
+    console.error('❌ Get goals error:', error);
+    res.status(500).json({ error: 'Failed to get goals' });
+  }
+});
+
+// Create goal
+app.post('/api/goals', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    const { title, description, category, target_type, target_value, deadline, difficulty } = req.body;
+
+    if (!title || !target_type || !target_value) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Calculate XP reward based on difficulty and target
+    const difficultyMultiplier: Record<string, number> = { easy: 1, medium: 2, hard: 3 };
+    const xp_reward = target_value * (difficultyMultiplier[difficulty as string] || 2) * 10;
+
+    const goal: LearningGoal = {
+      id: generateId('goal'),
+      user_id: userId,
+      workspace_id: null,
+      title,
+      description: description || null,
+      category: category || 'general',
+      target_type,
+      target_value,
+      current_value: 0,
+      status: 'active',
+      difficulty: difficulty || 'medium',
+      xp_reward,
+      deadline: deadline || null,
+      is_public: 0,
+      milestones: null,
+      resources: null,
+      created_at: Date.now(),
+      completed_at: null,
+    };
+
+    createLearningGoal(goal);
+
+    // Add activity
+    addActivityToFeed({
+      user_id: userId,
+      workspace_id: null,
+      action_type: 'captured',
+      entity_type: 'goal',
+      entity_id: goal.id,
+      metadata: JSON.stringify({ title: goal.title }),
+      is_public: 1,
+      created_at: Date.now(),
+    });
+
+    res.json({ success: true, goal });
+  } catch (error) {
+    console.error('❌ Create goal error:', error);
+    res.status(500).json({ error: 'Failed to create goal' });
+  }
+});
+
+// Update goal progress
+app.put('/api/goals/:id/progress', (req: Request, res: Response) => {
+  try {
+    const { value } = req.body;
+
+    if (typeof value !== 'number') {
+      return res.status(400).json({ error: 'Invalid value' });
+    }
+
+    updateGoalProgress(req.params.id, value);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Update goal error:', error);
+    res.status(500).json({ error: 'Failed to update goal' });
+  }
+});
+
+// ============= WORKSPACES =============
+
+// Get user workspaces
+app.get('/api/workspaces', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    const workspaces = getUserWorkspaces(userId);
+
+    res.json({ workspaces });
+  } catch (error) {
+    console.error('❌ Get workspaces error:', error);
+    res.status(500).json({ error: 'Failed to get workspaces' });
+  }
+});
+
+// Create workspace
+app.post('/api/workspaces', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    const { name, description, type, is_public } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const workspace: Workspace = {
+      id: generateId('workspace'),
+      name,
+      description: description || null,
+      type: type || 'personal',
+      owner_id: userId,
+      avatar: null,
+      is_public: is_public ? 1 : 0,
+      member_limit: 5,
+      created_at: Date.now(),
+      updated_at: null,
+    };
+
+    createWorkspace(workspace);
+
+    res.json({ success: true, workspace });
+  } catch (error) {
+    console.error('❌ Create workspace error:', error);
+    res.status(500).json({ error: 'Failed to create workspace' });
+  }
+});
+
+import { generateDailyDigest } from './digestGenerator';
+
+// Get daily digest
+app.get('/api/digest', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    const digest = generateDailyDigest(userId);
+
+    res.json({ digest });
+  } catch (error) {
+    console.error('❌ Digest generation error:', error);
+    res.status(500).json({ error: 'Failed to generate digest' });
+  }
+});
+
+// Share collection with workspace
+app.post('/api/workspaces/:id/share', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    const { collection_id, permissions } = req.body;
+
+    if (!collection_id) {
+      return res.status(400).json({ error: 'collection_id is required' });
+    }
+
+    shareCollectionWithWorkspace(
+      collection_id,
+      req.params.id,
+      userId,
+      permissions || 'view'
+    );
+
+    // Add activity
+    addActivityToFeed({
+      user_id: userId,
+      workspace_id: req.params.id,
+      action_type: 'shared',
+      entity_type: 'collection',
+      entity_id: collection_id,
+      metadata: null,
+      is_public: 1,
+      created_at: Date.now(),
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Share collection error:', error);
+    res.status(500).json({ error: 'Failed to share collection' });
+  }
+});
+
+// Get workspace activity
+app.get('/api/workspaces/:id/activity', (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const activity = getWorkspaceActivity(req.params.id, limit);
+
+    res.json({ activity });
+  } catch (error) {
+    console.error('❌ Get activity error:', error);
+    res.status(500).json({ error: 'Failed to get activity' });
+  }
+});
+
+// ============= SOCIAL FEED =============
+
+// Get public activity feed (Discover page)
+app.get('/api/feed', (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const activity = getPublicActivity(limit);
+
+    // Enrich with user and entity details
+    const enrichedActivity = activity.map(item => {
+      const user = getUserProfile(item.user_id);
+      let entity = null;
+
+      if (item.entity_type === 'document') {
+        entity = getDocumentById(item.entity_id);
+      } else if (item.entity_type === 'collection') {
+        entity = getCollectionById(item.entity_id);
+      }
+
+      return {
+        ...item,
+        user: user ? {
+          username: user.username,
+          display_name: user.display_name,
+          avatar: user.avatar,
+          level: user.level,
+        } : null,
+        entity,
+      };
+    });
+
+    res.json({ activity: enrichedActivity });
+  } catch (error) {
+    console.error('❌ Get feed error:', error);
+    res.status(500).json({ error: 'Failed to get feed' });
+  }
+});
+
+// ============= NOTIFICATIONS =============
+
+// Get user notifications
+app.get('/api/notifications', (req: Request, res: Response) => {
+  try {
+    const userId = 'user_default';
+    const result = db.exec(`
+      SELECT * FROM notifications
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 50
+    `, [userId]);
+
+    if (result.length === 0) {
+      return res.json({ notifications: [] });
+    }
+
+    const columns = result[0].columns;
+    const notifications = result[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ notifications });
+  } catch (error) {
+    console.error('❌ Get notifications error:', error);
+    res.status(500).json({ error: 'Failed to get notifications' });
+  }
+});
+
+// Mark notification as read
+app.put('/api/notifications/:id/read', (req: Request, res: Response) => {
+  try {
+    db.exec('UPDATE notifications SET is_read = 1, read_at = ? WHERE id = ?', [
+      Date.now(),
+      req.params.id,
+    ]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Mark notification error:', error);
+    res.status(500).json({ error: 'Failed to mark notification' });
+  }
+});
+
+// ============= LEADERBOARDS =============
+
+// Get leaderboard
+app.get('/api/leaderboard', (req: Request, res: Response) => {
+  try {
+    const type = req.query.type || 'xp';
+    const period = req.query.period || 'all_time';
+
+    let orderBy = 'xp';
+    if (type === 'documents') orderBy = 'total_documents';
+    else if (type === 'words') orderBy = 'total_words_read';
+    else if (type === 'streak') orderBy = 'streak_days';
+
+    const result = db.exec(`
+      SELECT 
+        user_id, username, display_name, avatar, level, xp,
+        total_documents, total_words_read, streak_days
+      FROM user_profiles
+      WHERE is_public = 1
+      ORDER BY ${orderBy} DESC
+      LIMIT 100
+    `);
+
+    if (result.length === 0) {
+      return res.json({ leaderboard: [] });
+    }
+
+    const columns = result[0].columns;
+    const leaderboard = result[0].values.map((row, index) => {
+      const obj: any = { rank: index + 1 };
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ leaderboard });
+  } catch (error) {
+    console.error('❌ Get leaderboard error:', error);
+    res.status(500).json({ error: 'Failed to get leaderboard' });
+  }
+});
+
+// ============= HOOK INTO EXISTING ENDPOINTS =============
+
+// Update capture endpoint to track progress
+const originalCaptureHandler = app.post('/api/capture', async (req: Request, res: Response) => {
+  // ... existing capture logic ...
+  
+  // After successful capture, add XP and update stats
+  const userId = 'user_default';
+  addUserXP(userId, 10); // 10 XP per capture
+
+  // Update user stats
+  const profile = getUserProfile(userId);
+  if (profile) {
+    profile.total_documents += 1;
+    upsertUserProfile(profile);
+  }
+
+  // Add to activity feed
+  addActivityToFeed({
+    user_id: userId,
+    workspace_id: null,
+    action_type: 'captured',
+    entity_type: 'document',
+    entity_id: 'doc_id', // Replace with actual doc ID
+    metadata: null,
+    is_public: 1,
+    created_at: Date.now(),
+  });
+});
+
+// Get user conversations
+app.get('/api/messages/conversations', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const conversations = getUserConversations(currentUserId);
+
+    // Enrich with other participant info and last message
+    const enrichedConversations = conversations.map(conv => {
+      // Determine other participant
+      const otherUserId = conv.participant1_id === currentUserId
+        ? conv.participant2_id
+        : conv.participant1_id;
+
+      const otherUser = getUserProfile(otherUserId);
+
+      // Get last message - FIX TYPE HERE
+      let lastMessage: any = null;
+      if (conv.last_message_id) {
+        const msgResult = db.exec('SELECT * FROM messages WHERE id = ?', [conv.last_message_id]);
+        if (msgResult.length > 0 && msgResult[0].values.length > 0) {
+          const msgColumns = msgResult[0].columns;
+          const msgRow = msgResult[0].values[0];
+          const messageObj: any = {};
+          msgColumns.forEach((col: string, idx: number) => {
+            messageObj[col] = msgRow[idx];
+          });
+          lastMessage = messageObj;
+        }
+      }
+
+      // Get unread count for this conversation
+      const unreadResult = db.exec(`
+        SELECT COUNT(*) as count FROM messages
+        WHERE conversation_id = ? AND sender_id = ? AND is_read = 0
+      `, [conv.id, otherUserId]);
+      const unreadCount = unreadResult.length > 0 ? unreadResult[0].values[0][0] : 0;
+
+      return {
+        ...conv,
+        otherUser: otherUser ? {
+          user_id: otherUser.user_id,
+          username: otherUser.username,
+          display_name: otherUser.display_name,
+          avatar: otherUser.avatar,
+          level: otherUser.level,
+        } : null,
+        lastMessage,
+        unreadCount,
+      };
+    });
+
+    res.json({ conversations: enrichedConversations });
+  } catch (error) {
+    console.error('❌ Get conversations error:', error);
+    res.status(500).json({ error: 'Failed to get conversations' });
+  }
+});
+
+// Get or create conversation with user
+app.post('/api/messages/conversations', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { user_id } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ error: 'user_id is required' });
+    }
+
+    const conversationId = getOrCreateConversation(currentUserId, user_id);
+
+    res.json({ conversation_id: conversationId });
+  } catch (error) {
+    console.error('❌ Create conversation error:', error);
+    res.status(500).json({ error: 'Failed to create conversation' });
+  }
+});
+
+// Get messages in conversation
+app.get('/api/messages/conversations/:conversationId', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { conversationId } = req.params;
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    // Verify user is participant
+    const convResult = db.exec(`
+      SELECT * FROM conversations
+      WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
+    `, [conversationId, currentUserId, currentUserId]);
+
+    if (convResult.length === 0 || convResult[0].values.length === 0) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const messages = getConversationMessages(conversationId, limit);
+
+    // Mark messages as read
+    markMessagesAsRead(conversationId, currentUserId);
+
+    res.json({ messages });
+  } catch (error) {
+    console.error('❌ Get messages error:', error);
+    res.status(500).json({ error: 'Failed to get messages' });
+  }
+});
+
+// Send message
+app.post('/api/messages/send', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { conversation_id, content } = req.body;
+
+    if (!conversation_id || !content?.trim()) {
+      return res.status(400).json({ error: 'conversation_id and content are required' });
+    }
+
+    // Verify user is participant
+    const convResult = db.exec(`
+      SELECT * FROM conversations
+      WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
+    `, [conversation_id, currentUserId, currentUserId]);
+
+    if (convResult.length === 0 || convResult[0].values.length === 0) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const message = sendMessage(conversation_id, currentUserId, content.trim());
+
+    // Get other participant to notify
+    const convColumns = convResult[0].columns;
+    const convRow = convResult[0].values[0];
+    const conv: any = {};
+    convColumns.forEach((col, idx) => {
+      conv[col] = convRow[idx];
+    });
+
+    const otherUserId = conv.participant1_id === currentUserId
+      ? conv.participant2_id
+      : conv.participant1_id;
+
+    // Create notification
+    const currentUser = getUserProfile(currentUserId);
+    createNotification({
+      user_id: otherUserId,
+      type: 'message',
+      title: 'New Message',
+      message: `${currentUser?.display_name || 'Someone'} sent you a message`,
+      action_url: `/messages/${conversation_id}`,
+      icon: '💬',
+      priority: 'high',
+    });
+
+    res.json({ message });
+  } catch (error) {
+    console.error('❌ Send message error:', error);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+// Get unread message count
+app.get('/api/messages/unread-count', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const count = getUnreadCount(currentUserId);
+
+    res.json({ count });
+  } catch (error) {
+    console.error('❌ Get unread count error:', error);
+    res.status(500).json({ error: 'Failed to get unread count' });
+  }
+});
+
+// Delete conversation
+app.delete('/api/messages/conversations/:conversationId', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { conversationId } = req.params;
+
+    // Verify user is participant
+    const convResult = db.exec(`
+      SELECT * FROM conversations
+      WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
+    `, [conversationId, currentUserId, currentUserId]);
+
+    if (convResult.length === 0 || convResult[0].values.length === 0) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    db.exec('DELETE FROM conversations WHERE id = ?', [conversationId]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Delete conversation error:', error);
+    res.status(500).json({ error: 'Failed to delete conversation' });
+  }
+});
+
+// Update typing indicator
+app.post('/api/messages/typing', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { conversation_id, typing } = req.body;
+
+    if (!conversation_id) {
+      return res.status(400).json({ error: 'conversation_id is required' });
+    }
+
+    if (typing) {
+      const id = `typing_${currentUserId}_${conversation_id}`;
+      db.exec(`
+        INSERT OR REPLACE INTO typing_indicators (id, conversation_id, user_id, started_at)
+        VALUES (?, ?, ?, ?)
+      `, [id, conversation_id, currentUserId, Date.now()]);
+    } else {
+      db.exec(`
+        DELETE FROM typing_indicators
+        WHERE conversation_id = ? AND user_id = ?
+      `, [conversation_id, currentUserId]);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Typing indicator error:', error);
+    res.status(500).json({ error: 'Failed to update typing' });
+  }
+});
 
 // Get entity details
 app.get('/api/concept-graph/entities/:id', async (req: Request, res: Response) => {
@@ -2037,6 +2799,712 @@ app.post('/api/documents/reprocess', async (_req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to start re-processing' });
   }
 });
+
+import { generateDailyChallenges } from './challengeGenerator';
+
+// Get daily challenges
+app.get('/api/challenges/daily', (req: Request, res: Response) => {
+  try {
+    const challenges = generateDailyChallenges();
+    
+    // TODO: Get user progress from database
+    const challengesWithProgress = challenges.map(challenge => ({
+      ...challenge,
+      progress: 0,
+      completed: false,
+    }));
+
+    res.json({ challenges: challengesWithProgress });
+  } catch (error) {
+    console.error('❌ Daily challenges error:', error);
+    res.status(500).json({ error: 'Failed to get challenges' });
+  }
+});
+
+// Get public user profile
+app.get('/api/users/:userId/profile', (req: Request, res: Response) => {
+  try {
+    const targetUserId = req.params.userId;
+    const currentUserId = 'user_default'; // TODO: Get from auth
+
+    const profile = getUserProfile(targetUserId);
+
+    if (!profile || !profile.is_public) {
+      return res.status(404).json({ error: 'Profile not found or private' });
+    }
+
+    // Check if current user is following target user
+    const isFollowing = false; // TODO: Implement following check
+
+    res.json({
+      profile,
+      isOwnProfile: currentUserId === targetUserId,
+      isFollowing,
+    });
+  } catch (error) {
+    console.error('❌ Get user profile error:', error);
+    res.status(500).json({ error: 'Failed to get profile' });
+  }
+});
+
+// Get user achievements
+app.get('/api/users/:userId/achievements', (req: Request, res: Response) => {
+  try {
+    const userId = req.params.userId;
+
+    const result = db.exec(`
+      SELECT a.*, ua.unlocked_at
+      FROM achievements a
+      INNER JOIN user_achievements ua ON a.id = ua.achievement_id
+      WHERE ua.user_id = ?
+      ORDER BY ua.unlocked_at DESC
+      LIMIT 20
+    `, [userId]);
+
+    if (result.length === 0) {
+      return res.json({ achievements: [] });
+    }
+
+    const columns = result[0].columns;
+    const achievements = result[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ achievements });
+  } catch (error) {
+    console.error('❌ Get user achievements error:', error);
+    res.status(500).json({ error: 'Failed to get achievements' });
+  }
+});
+
+// Get user activity
+app.get('/api/users/:userId/activity', (req: Request, res: Response) => {
+  try {
+    const userId = req.params.userId;
+    const limit = parseInt(req.query.limit as string) || 20;
+
+    const result = db.exec(`
+      SELECT * FROM activity_feed
+      WHERE user_id = ? AND is_public = 1
+      ORDER BY created_at DESC
+      LIMIT ?
+    `, [userId, limit]);
+
+    if (result.length === 0) {
+      return res.json({ activity: [] });
+    }
+
+    const columns = result[0].columns;
+    const activity = result[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ activity });
+  } catch (error) {
+    console.error('❌ Get user activity error:', error);
+    res.status(500).json({ error: 'Failed to get activity' });
+  }
+});
+
+// Follow user
+app.post('/api/follow', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default'; // TODO: Get from auth
+    const { user_id: targetUserId } = req.body;
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'user_id is required' });
+    }
+
+    const id = `follow_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    db.exec(`
+      INSERT OR IGNORE INTO follows (id, follower_id, following_id, created_at)
+      VALUES (?, ?, ?, ?)
+    `, [id, currentUserId, targetUserId, Date.now()]);
+
+    // Create notification for target user
+    createNotification({
+      user_id: targetUserId,
+      type: 'follow',
+      title: 'New Follower',
+      message: 'Someone started following you!',
+      icon: '👋',
+      priority: 'normal',
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Follow error:', error);
+    res.status(500).json({ error: 'Failed to follow user' });
+  }
+});
+
+// Unfollow user
+app.post('/api/unfollow', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default'; // TODO: Get from auth
+    const { user_id: targetUserId } = req.body;
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'user_id is required' });
+    }
+
+    db.exec(`
+      DELETE FROM follows
+      WHERE follower_id = ? AND following_id = ?
+    `, [currentUserId, targetUserId]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Unfollow error:', error);
+    res.status(500).json({ error: 'Failed to unfollow user' });
+  }
+});
+// Get workspace details
+app.get('/api/workspaces/:id', (req: Request, res: Response) => {
+  try {
+    const result = db.exec('SELECT * FROM workspaces WHERE id = ?', [req.params.id]);
+
+    if (result.length === 0 || result[0].values.length === 0) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    const columns = result[0].columns;
+    const row = result[0].values[0];
+    const workspace: any = {};
+    columns.forEach((col, idx) => {
+      workspace[col] = row[idx];
+    });
+
+    res.json({ workspace });
+  } catch (error) {
+    console.error('❌ Get workspace error:', error);
+    res.status(500).json({ error: 'Failed to get workspace' });
+  }
+});
+
+// Get workspace members
+app.get('/api/workspaces/:id/members', (req: Request, res: Response) => {
+  try {
+    const result = db.exec(`
+      SELECT 
+        wm.id, wm.user_id, wm.role, wm.joined_at,
+        up.username, up.display_name, up.avatar
+      FROM workspace_members wm
+      LEFT JOIN user_profiles up ON wm.user_id = up.user_id
+      WHERE wm.workspace_id = ?
+      ORDER BY 
+        CASE wm.role 
+          WHEN 'owner' THEN 1 
+          WHEN 'admin' THEN 2 
+          WHEN 'member' THEN 3 
+          ELSE 4 
+        END,
+        wm.joined_at ASC
+    `, [req.params.id]);
+
+    if (result.length === 0) {
+      return res.json({ members: [] });
+    }
+
+    const columns = result[0].columns;
+    const members = result[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ members });
+  } catch (error) {
+    console.error('❌ Get members error:', error);
+    res.status(500).json({ error: 'Failed to get members' });
+  }
+});
+
+// Get workspace collections
+app.get('/api/workspaces/:id/collections', (req: Request, res: Response) => {
+  try {
+    const result = db.exec(`
+      SELECT 
+        sc.id, sc.collection_id, sc.shared_by, sc.permissions, sc.shared_at,
+        c.name as collection_name,
+        (SELECT COUNT(*) FROM collection_documents WHERE collection_id = c.id) as document_count
+      FROM shared_collections sc
+      INNER JOIN collections c ON sc.collection_id = c.id
+      WHERE sc.workspace_id = ?
+      ORDER BY sc.shared_at DESC
+    `, [req.params.id]);
+
+    if (result.length === 0) {
+      return res.json({ collections: [] });
+    }
+
+    const columns = result[0].columns;
+    const collections = result[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ collections });
+  } catch (error) {
+    console.error('❌ Get workspace collections error:', error);
+    res.status(500).json({ error: 'Failed to get collections' });
+  }
+});
+
+// Invite member to workspace
+app.post('/api/workspaces/:id/invite', (req: Request, res: Response) => {
+  try {
+    const { email, role } = req.body;
+
+    if (!email || !role) {
+      return res.status(400).json({ error: 'Email and role are required' });
+    }
+
+    // TODO: Send invitation email
+    // TODO: Create pending invitation record
+
+    res.json({ success: true, message: 'Invitation sent' });
+  } catch (error) {
+    console.error('❌ Invite error:', error);
+    res.status(500).json({ error: 'Failed to send invitation' });
+  }
+});
+
+// Remove member from workspace
+app.delete('/api/workspaces/:workspaceId/members/:memberId', (req: Request, res: Response) => {
+  try {
+    db.exec('DELETE FROM workspace_members WHERE id = ?', [req.params.memberId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Remove member error:', error);
+    res.status(500).json({ error: 'Failed to remove member' });
+  }
+});
+
+// Update member role
+app.put('/api/workspaces/:workspaceId/members/:memberId/role', (req: Request, res: Response) => {
+  try {
+    const { role } = req.body;
+
+    if (!role) {
+      return res.status(400).json({ error: 'Role is required' });
+    }
+
+    db.exec('UPDATE workspace_members SET role = ? WHERE id = ?', [role, req.params.memberId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Update role error:', error);
+    res.status(500).json({ error: 'Failed to update role' });
+  }
+});
+
+// Get enriched feed with likes and comments count
+// Get enriched feed with likes and comments count
+app.get('/api/feed', async (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const filter = req.query.filter || 'all';
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    let activityResult;
+
+    if (filter === 'following') {
+      // Get activity from followed users
+      activityResult = db.exec(`
+        SELECT DISTINCT af.* FROM activity_feed af
+        INNER JOIN follows f ON af.user_id = f.following_id
+        WHERE f.follower_id = ? AND af.is_public = 1
+        ORDER BY af.created_at DESC
+        LIMIT ?
+      `, [currentUserId, limit]);
+    } else if (filter === 'trending') {
+      // Get trending activity (most liked/commented in last 7 days)
+      activityResult = db.exec(`
+        SELECT af.* FROM activity_feed af
+        LEFT JOIN activity_likes al ON af.id = al.activity_id
+        WHERE af.is_public = 1 AND af.created_at > ?
+        GROUP BY af.id
+        ORDER BY COUNT(al.id) DESC, af.created_at DESC
+        LIMIT ?
+      `, [Date.now() - 7 * 24 * 60 * 60 * 1000, limit]);
+    } else {
+      // Get all public activity
+      activityResult = db.exec(`
+        SELECT * FROM activity_feed
+        WHERE is_public = 1
+        ORDER BY created_at DESC
+        LIMIT ?
+      `, [limit]);
+    }
+
+    if (activityResult.length === 0) {
+      return res.json({ activity: [] });
+    }
+
+    const columns = activityResult[0].columns;
+    const activityItems = activityResult[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    // Enrich with user info, entity data, likes, comments
+    const enrichedActivity = activityItems.map(item => {
+      // Get user info
+      const user = getUserProfile(item.user_id);
+
+      // Get entity (document, collection, etc) - FIX TYPE HERE
+      let entity: any = null;
+      
+      if (item.entity_type === 'document') {
+        entity = getDocumentById(item.entity_id);
+      } else if (item.entity_type === 'collection') {
+        entity = getCollectionById(item.entity_id);
+      } else if (item.entity_type === 'goal') {
+        // Get goal info
+        const goalResult = db.exec('SELECT * FROM learning_goals WHERE id = ?', [item.entity_id]);
+        if (goalResult.length > 0 && goalResult[0].values.length > 0) {
+          const goalColumns = goalResult[0].columns;
+          const goalRow = goalResult[0].values[0];
+          const goalEntity: any = {};
+          goalColumns.forEach((col, idx) => {
+            goalEntity[col] = goalRow[idx];
+          });
+          entity = goalEntity;
+        }
+      }
+
+      // Get likes count
+      const likesResult = db.exec(
+        'SELECT COUNT(*) as count FROM activity_likes WHERE activity_id = ?',
+        [item.id]
+      );
+      const likes_count = likesResult.length > 0 ? likesResult[0].values[0][0] : 0;
+
+      // Check if current user liked
+      const userLikeResult = db.exec(
+        'SELECT id FROM activity_likes WHERE activity_id = ? AND user_id = ?',
+        [item.id, currentUserId]
+      );
+      const is_liked = userLikeResult.length > 0 && userLikeResult[0].values.length > 0;
+
+      // Get comments count
+      const commentsResult = db.exec(
+        'SELECT COUNT(*) as count FROM activity_comments WHERE activity_id = ?',
+        [item.id]
+      );
+      const comments_count = commentsResult.length > 0 ? commentsResult[0].values[0][0] : 0;
+
+      return {
+        ...item,
+        user: user ? {
+          username: user.username,
+          display_name: user.display_name,
+          avatar: user.avatar,
+          level: user.level,
+        } : null,
+        entity,
+        likes_count,
+        comments_count,
+        is_liked,
+      };
+    });
+
+    res.json({ activity: enrichedActivity });
+  } catch (error) {
+    console.error('❌ Feed error:', error);
+    res.status(500).json({ error: 'Failed to get feed' });
+  }
+});
+
+// Like/Unlike activity
+app.post('/api/activity/like', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { activity_id, action } = req.body;
+
+    if (!activity_id || !action) {
+      return res.status(400).json({ error: 'activity_id and action are required' });
+    }
+
+    if (action === 'like') {
+      const id = `like_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      db.exec(`
+        INSERT OR IGNORE INTO activity_likes (id, activity_id, user_id, created_at)
+        VALUES (?, ?, ?, ?)
+      `, [id, activity_id, currentUserId, Date.now()]);
+
+      // Get activity owner to notify
+      const activityResult = db.exec('SELECT user_id FROM activity_feed WHERE id = ?', [activity_id]);
+      if (activityResult.length > 0 && activityResult[0].values.length > 0) {
+        const ownerId = activityResult[0].values[0][0];
+        
+        if (ownerId !== currentUserId) {
+          createNotification({
+            user_id: ownerId as string,
+            type: 'like',
+            title: 'New Like',
+            message: 'Someone liked your activity!',
+            action_url: `/feed/${activity_id}`,
+            icon: '❤️',
+            priority: 'normal',
+          });
+        }
+      }
+
+      res.json({ success: true, action: 'liked' });
+    } else if (action === 'unlike') {
+      db.exec(`
+        DELETE FROM activity_likes
+        WHERE activity_id = ? AND user_id = ?
+      `, [activity_id, currentUserId]);
+
+      res.json({ success: true, action: 'unliked' });
+    } else {
+      res.status(400).json({ error: 'Invalid action' });
+    }
+  } catch (error) {
+    console.error('❌ Like error:', error);
+    res.status(500).json({ error: 'Failed to like activity' });
+  }
+});
+
+// Get comments for activity
+app.get('/api/activity/:activityId/comments', (req: Request, res: Response) => {
+  try {
+    const { activityId } = req.params;
+
+    const result = db.exec(`
+      SELECT 
+        ac.id, ac.activity_id, ac.user_id, ac.content, ac.likes, ac.created_at,
+        up.username, up.display_name, up.avatar
+      FROM activity_comments ac
+      LEFT JOIN user_profiles up ON ac.user_id = up.user_id
+      WHERE ac.activity_id = ? AND ac.parent_comment_id IS NULL
+      ORDER BY ac.created_at DESC
+    `, [activityId]);
+
+    if (result.length === 0) {
+      return res.json({ comments: [] });
+    }
+
+    const columns = result[0].columns;
+    const comments = result[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ comments });
+  } catch (error) {
+    console.error('❌ Get comments error:', error);
+    res.status(500).json({ error: 'Failed to get comments' });
+  }
+});
+
+// Add comment to activity
+app.post('/api/activity/comment', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { activity_id, content, parent_comment_id } = req.body;
+
+    if (!activity_id || !content?.trim()) {
+      return res.status(400).json({ error: 'activity_id and content are required' });
+    }
+
+    const id = `comment_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    db.exec(`
+      INSERT INTO activity_comments (id, activity_id, user_id, parent_comment_id, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [id, activity_id, currentUserId, parent_comment_id || null, content.trim(), Date.now()]);
+
+    // Get user info
+    const user = getUserProfile(currentUserId);
+
+    // Notify activity owner
+    const activityResult = db.exec('SELECT user_id FROM activity_feed WHERE id = ?', [activity_id]);
+    if (activityResult.length > 0 && activityResult[0].values.length > 0) {
+      const ownerId = activityResult[0].values[0][0];
+      
+      if (ownerId !== currentUserId) {
+        createNotification({
+          user_id: ownerId as string,
+          type: 'comment',
+          title: 'New Comment',
+          message: `${user?.display_name || 'Someone'} commented on your activity`,
+          action_url: `/feed/${activity_id}`,
+          icon: '💬',
+          priority: 'normal',
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      comment: {
+        id,
+        activity_id,
+        user_id: currentUserId,
+        content: content.trim(),
+        created_at: Date.now(),
+        username: user?.username || 'anonymous',
+        display_name: user?.display_name || 'Anonymous',
+        avatar: user?.avatar || null,
+        likes: 0,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Comment error:', error);
+    res.status(500).json({ error: 'Failed to add comment' });
+  }
+});
+
+// Track share
+app.post('/api/activity/share', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { activity_id, platform } = req.body;
+
+    if (!activity_id) {
+      return res.status(400).json({ error: 'activity_id is required' });
+    }
+
+    const id = `share_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    db.exec(`
+      INSERT INTO activity_shares (id, activity_id, user_id, platform, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `, [id, activity_id, currentUserId, platform || 'unknown', Date.now()]);
+
+    // Notify activity owner
+    const activityResult = db.exec('SELECT user_id FROM activity_feed WHERE id = ?', [activity_id]);
+    if (activityResult.length > 0 && activityResult[0].values.length > 0) {
+      const ownerId = activityResult[0].values[0][0];
+      
+      if (ownerId !== currentUserId) {
+        createNotification({
+          user_id: ownerId as string,
+          type: 'share',
+          title: 'Activity Shared',
+          message: 'Someone shared your activity!',
+          icon: '🔗',
+          priority: 'normal',
+        });
+      }
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Share error:', error);
+    res.status(500).json({ error: 'Failed to track share' });
+  }
+});
+
+// Delete comment
+app.delete('/api/activity/comment/:commentId', (req: Request, res: Response) => {
+  try {
+    const currentUserId = 'user_default';
+    const { commentId } = req.params;
+
+    // Check if user owns the comment
+    const result = db.exec('SELECT user_id FROM activity_comments WHERE id = ?', [commentId]);
+    
+    if (result.length === 0 || result[0].values.length === 0) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+
+    const commentOwnerId = result[0].values[0][0];
+
+    if (commentOwnerId !== currentUserId) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    db.exec('DELETE FROM activity_comments WHERE id = ?', [commentId]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Delete comment error:', error);
+    res.status(500).json({ error: 'Failed to delete comment' });
+  }
+});
+
+// Like comment
+app.post('/api/activity/comment/:commentId/like', (req: Request, res: Response) => {
+  try {
+    const { commentId } = req.params;
+
+    db.exec(`
+      UPDATE activity_comments 
+      SET likes = likes + 1 
+      WHERE id = ?
+    `, [commentId]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Like comment error:', error);
+    res.status(500).json({ error: 'Failed to like comment' });
+  }
+});
+
+// Get activity statistics
+app.get('/api/activity/:activityId/stats', (req: Request, res: Response) => {
+  try {
+    const { activityId } = req.params;
+
+    // Get likes count
+    const likesResult = db.exec(
+      'SELECT COUNT(*) as count FROM activity_likes WHERE activity_id = ?',
+      [activityId]
+    );
+    const likes = likesResult.length > 0 ? likesResult[0].values[0][0] : 0;
+
+    // Get comments count
+    const commentsResult = db.exec(
+      'SELECT COUNT(*) as count FROM activity_comments WHERE activity_id = ?',
+      [activityId]
+    );
+    const comments = commentsResult.length > 0 ? commentsResult[0].values[0][0] : 0;
+
+    // Get shares count
+    const sharesResult = db.exec(
+      'SELECT COUNT(*) as count FROM activity_shares WHERE activity_id = ?',
+      [activityId]
+    );
+    const shares = sharesResult.length > 0 ? sharesResult[0].values[0][0] : 0;
+
+    res.json({
+      likes,
+      comments,
+      shares,
+      total_engagement: (likes as number) + (comments as number) + (shares as number),
+    });
+  } catch (error) {
+    console.error('❌ Activity stats error:', error);
+    res.status(500).json({ error: 'Failed to get stats' });
+  }
+});
+
 // Export all documents as JSON
 app.get('/api/export/documents', (_req: Request, res: Response) => {
   try {

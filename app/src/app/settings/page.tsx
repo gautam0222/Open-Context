@@ -141,7 +141,7 @@ export default function SettingsPage() {
       title="Settings"
       description="Configure your Open Context experience"
     >
-      <div className="max-w-4xl mx-auto space-y-6">
+      <div className="w-full mx-auto space-y-6">
         {/* API Configuration */}
         <div className="card p-6">
           <div className="flex items-center gap-3 mb-6">

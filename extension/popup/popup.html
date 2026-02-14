@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open Context</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">📚</div>
+        <div class="logo-text">
+          <div class="logo-title">Open Context</div>
+          <div class="logo-subtitle">Your AI Knowledge Base</div>
+        </div>
+      </div>
+      <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
+    </header>
+
+    <!-- User Stats -->
+    <div class="stats-card">
+      <div class="stat">
+        <div class="stat-value" id="statDocuments">0</div>
+        <div class="stat-label">Documents</div>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat">
+        <div class="stat-value" id="statLevel">1</div>
+        <div class="stat-label">Level</div>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat">
+        <div class="stat-value" id="statStreak">0</div>
+        <div class="stat-label">Streak 🔥</div>
+      </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="actions">
+      <button id="capturePageBtn" class="action-btn primary">
+        <span class="btn-icon">📄</span>
+        <div class="btn-content">
+          <div class="btn-title">Capture This Page</div>
+          <div class="btn-subtitle">Save full article with AI</div>
+        </div>
+      </button>
+
+      <button id="captureSelectionBtn" class="action-btn secondary">
+        <span class="btn-icon">✂️</span>
+        <div class="btn-content">
+          <div class="btn-title">Capture Selection</div>
+          <div class="btn-subtitle">Save selected text</div>
+        </div>
+      </button>
+
+      <button id="quickNoteBtn" class="action-btn secondary">
+        <span class="btn-icon">📝</span>
+        <div class="btn-content">
+          <div class="btn-title">Quick Note</div>
+          <div class="btn-subtitle">Write a note</div>
+        </div>
+      </button>
+    </div>
+
+    <!-- Collections Quick Add -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Add to Collection</span>
+        <button id="manageCollectionsBtn" class="text-btn">Manage</button>
+      </div>
+      <div id="collectionsList" class="collections-list">
+        <div class="loading">Loading collections...</div>
+      </div>
+    </div>
+
+    <!-- Recent Captures -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-title">Recent Captures</span>
+        <a href="http://localhost:3000/library" target="_blank" class="text-btn">View All</a>
+      </div>
+      <div id="recentList" class="recent-list">
+        <div class="loading">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <a href="http://localhost:3000" target="_blank" class="footer-link">
+        Open Dashboard
+      </a>
+      <button id="feedbackBtn" class="footer-link">Feedback</button>
+    </footer>
+
+    <!-- Status Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- Quick Note Modal -->
+    <div id="noteModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 class="modal-title">Quick Note</h3>
+          <button id="closeNoteBtn" class="icon-btn">✕</button>
+        </div>
+        <div class="modal-body">
+          <textarea 
+            id="noteInput" 
+            class="note-textarea" 
+            placeholder="Write your note here..."
+            rows="6"
+            autofocus
+          ></textarea>
+          <div class="note-meta">
+            <select id="noteCollection" class="note-select">
+              <option value="">No collection</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="cancelNoteBtn" class="modal-btn secondary">Cancel</button>
+          <button id="saveNoteBtn" class="modal-btn primary">Save Note</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

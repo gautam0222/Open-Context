@@ -19,7 +19,7 @@ export default function UploadPage() {
       title="Upload Files"
       description="Upload PDFs, Word docs, and text files to your knowledge base"
     >
-      <div className="max-w-4xl mx-auto">
+      <div className="w-full mx-auto">
         {!uploadComplete ? (
           <>
             {/* Info Cards */}

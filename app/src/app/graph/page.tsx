@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import MainLayout from '@/components/Layout/MainLayout';
-import ForceGraph3D from '@/components/KnowledgeGraph/ForceGraph3D';
+import NetworkGraph from '@/components/KnowledgeGraph/NetworkGraph';
 import EntityExplorer from '@/components/KnowledgeGraph/EntityExplorer';
 import RelationshipExplorer from '@/components/KnowledgeGraph/RelationshipExplorer';
 import {
@@ -62,7 +62,7 @@ export default function ConceptGraphPage() {
   const [graphData, setGraphData] = useState<ConceptGraphData | null>(null);
   const [selectedEntity, setSelectedEntity] = useState<EntityDetails | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'3d' | 'list'>('3d');
+  const [view, setView] = useState<'network' | 'list'>('network');
 
   useEffect(() => {
     loadGraph();
@@ -115,14 +115,14 @@ export default function ConceptGraphPage() {
         <div className="flex gap-2">
           <div className="flex bg-gray-100 rounded-lg p-1">
             <button
-              onClick={() => setView('3d')}
+              onClick={() => setView('network')}
               className={`px-3 py-1.5 text-sm font-medium rounded transition ${
-                view === '3d'
+                view === 'network'
                   ? 'bg-white text-brand-600 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              3D Graph
+              Network Graph
             </button>
             <button
               onClick={() => setView('list')}
@@ -243,39 +243,21 @@ export default function ConceptGraphPage() {
           )}
 
           {/* Main Content */}
-          {view === '3d' ? (
+          {view === 'network' ? (
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              {/* 3D Graph - 3/4 width */}
+              {/* Network Graph - 3/4 width */}
               <div className="lg:col-span-3">
                 <div className="card p-6 h-[700px]">
                   <div className="flex items-center justify-between mb-4">
                     <div>
-                      <h3 className="text-lg font-semibold text-gray-900">3D Concept Network</h3>
+                      <h3 className="text-lg font-semibold text-gray-900">Concept Network</h3>
                       <p className="text-sm text-gray-600 mt-1">
-                        Drag to rotate • Scroll to zoom • Click nodes to explore
+                        Interactive visualization of knowledge entities and relationships
                       </p>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs">
-                      <div className="flex items-center gap-1">
-                        <div className="w-3 h-3 rounded-full bg-pink-500"></div>
-                        <span className="text-gray-600">People</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <div className="w-3 h-3 rounded-full bg-purple-500"></div>
-                        <span className="text-gray-600">Orgs</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <div className="w-3 h-3 rounded-full bg-blue-500"></div>
-                        <span className="text-gray-600">Tech</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <div className="w-3 h-3 rounded-full bg-green-500"></div>
-                        <span className="text-gray-600">Concepts</span>
-                      </div>
                     </div>
                   </div>
                   <div className="h-[600px]">
-                    <ForceGraph3D
+                    <NetworkGraph
                       entities={graphData.entities}
                       relationships={graphData.relationships}
                       onNodeClick={handleEntityClick}

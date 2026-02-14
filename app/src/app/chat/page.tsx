@@ -139,7 +139,7 @@ export default function ChatPage() {
                 <SparklesIcon className="w-10 h-10 text-brand-600" />
               </div>
               <h2 className="text-2xl font-bold text-gray-900 mb-3">Chat with Your Knowledge</h2>
-              <p className="text-gray-600 mb-8 max-w-md">
+              <p className="text-gray-600 mb-8 w-max-md">
                 Ask questions about your captured documents. I'll search through your library and provide answers with sources.
               </p>
 
@@ -193,7 +193,7 @@ export default function ChatPage() {
                 </button>
               </div>
 
-              <div className="mt-8 p-4 bg-amber-50 rounded-lg max-w-md">
+              <div className="mt-8 p-4 bg-amber-50 rounded-lg w-full max-w-2xl">
                 <div className="text-sm text-amber-800">
                   <strong>Note:</strong> Make sure you have the ANTHROPIC_API_KEY set in your server's .env file to use this feature.
                 </div>
@@ -206,7 +206,7 @@ export default function ChatPage() {
                 className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`max-w-3xl ${
+                  className={`w-full max-w-2xl ${
                     message.role === 'user'
                       ? 'bg-brand-600 text-white'
                       : 'bg-white border border-gray-200'
