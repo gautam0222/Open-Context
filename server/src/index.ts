@@ -1,4 +1,5 @@
 import express, { Express, Request, Response } from 'express';
+import { requireAuth, optionalAuth, getUserIdFromToken } from './middleware/auth';
 import { searchSimilarChunks } from './search';
 import { getSearchStats } from './search';
 import { checkEmbeddingServer } from './embedder';
@@ -124,9 +125,9 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 // Capture endpoint (ENHANCED with content extraction)
-// Capture endpoint (ENHANCED with chunking)
 app.post('/api/capture', async (req: Request, res: Response) => {
   try {
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const capturedData = req.body as {
       id: string;
       url: string;
@@ -134,49 +135,38 @@ app.post('/api/capture', async (req: Request, res: Response) => {
       selectedText?: string;
       timestamp: number;
     };
+
     if (!capturedData.url || !capturedData.id) {
-  return res.status(400).json({ error: "Invalid payload" });
-}
+      return res.status(400).json({ error: "Invalid payload" });
+    }
 
+    console.log(`📸 Capture by ${userId}:`, capturedData.title);
 
-    console.log('📸 Received capture:', {
-      id: capturedData.id,
-      url: capturedData.url,
-      title: capturedData.title,
-      timestamp: new Date(capturedData.timestamp).toISOString(),
-    });
-
-    // Check if URL already exists
+    // Check for duplicates
     const existingDoc = getDocumentByUrl(capturedData.url);
-    if (existingDoc) {
-      console.log('⚠️ URL already captured:', existingDoc.id);
-      
-      // Get chunk count for existing doc
+    if (existingDoc && existingDoc.user_id === userId) {
       const chunkCount = getChunksByDocumentId(existingDoc.id).length;
-      
       return res.json({
         success: true,
         message: 'URL already captured',
         id: existingDoc.id,
         duplicate: true,
         wordCount: existingDoc.word_count,
-        chunkCount: chunkCount,
+        chunkCount,
       });
     }
 
-    // Extract content from URL
+    // Extract content
     console.log('🔍 Extracting content...');
     const extraction = await extractContent(capturedData.url);
 
     if (!extraction.success || !extraction.data) {
-      console.error('❌ Extraction failed:', extraction.error);
-
-      // Still save basic info even if extraction fails
       insertDocument({
         id: capturedData.id,
         url: capturedData.url,
         title: capturedData.title,
         excerpt: capturedData.selectedText,
+        user_id: userId,
       });
 
       return res.json({
@@ -184,214 +174,117 @@ app.post('/api/capture', async (req: Request, res: Response) => {
         message: 'Saved (extraction failed)',
         id: capturedData.id,
         extractionFailed: true,
-        error: extraction.error,
       });
     }
 
-    // Save document to database
+    // Save document
     insertDocument({
       id: capturedData.id,
       url: capturedData.url,
       title: extraction.data.title,
       content: extraction.data.textContent,
       excerpt: extraction.data.excerpt,
-      author: extraction.data.byline || undefined,
-      site_name: extraction.data.siteName || undefined,
+      author: extraction.data.byline ?? undefined,
+      site_name: extraction.data.siteName ?? undefined,
       word_count: extraction.data.wordCount,
+      user_id: userId,
     });
 
-    console.log(`✅ Saved document ${capturedData.id} (${extraction.data.wordCount} words)`);
+    console.log(`✅ Saved document ${capturedData.id}`);
 
-    // Chunk the content
-    // Chunk the content
+    // Chunk content
     console.log('🔪 Chunking content...');
     const chunks = chunkText(extraction.data.textContent, capturedData.id);
     
     if (chunks.length > 0) {
-      // GENERATE EMBEDDINGS (NEW CODE)
       console.log('🤖 Generating embeddings...');
       const chunkTexts = chunks.map(c => c.content);
       const embeddingResult = await generateEmbeddingsBatch(chunkTexts);
       
       if (embeddingResult.success && embeddingResult.embeddings) {
-        // Add embeddings to chunks
         chunks.forEach((chunk, index) => {
           chunk.embedding = embeddingResult.embeddings![index];
         });
         console.log(`✅ Added embeddings to ${chunks.length} chunks`);
-      } else {
-        console.warn('⚠️ Embedding generation failed:', embeddingResult.error);
       }
       
       insertChunks(chunks);
       console.log(`✅ Saved ${chunks.length} chunks`);
-      
-      const chunkStats = getChunkingStats(chunks);
-      console.log(`📊 Chunk stats: avg ${chunkStats.avgCharCount} chars, range ${chunkStats.minCharCount}-${chunkStats.maxCharCount}`);
     }
 
-// After chunks are saved, add entity extraction
-console.log('🧠 Extracting entities...');
-const entities = extractEntities(extraction.data.textContent || '');
-console.log(`📊 Found ${entities.length} entities`);
+    // Extract entities
+    console.log('🧠 Extracting entities...');
+    const entities = extractEntities(extraction.data.textContent || '');
+    const entityMap: Map<string, string> = new Map();
 
-// Save entities to database
-const entityMap: Map<string, string> = new Map(); // text -> entity_id
+    for (const entity of entities) {
+      let existingEntity = getEntityByName(entity.text);
+      
+      if (existingEntity) {
+        incrementEntityFrequency(existingEntity.id);
+        entityMap.set(entity.text.toLowerCase(), existingEntity.id);
+      } else {
+        const entityId = generateId('entity');
+        insertEntity({
+          id: entityId,
+          name: entity.text,
+          type: entity.type,
+          frequency: entity.frequency,
+        });
+        entityMap.set(entity.text.toLowerCase(), entityId);
+      }
+    }
 
-for (const entity of entities) {
-  // Check if entity already exists
-  let existingEntity = getEntityByName(entity.text);
-  
-  if (existingEntity) {
-    // Increment frequency
-    incrementEntityFrequency(existingEntity.id);
-    entityMap.set(entity.text.toLowerCase(), existingEntity.id);
-  } else {
-    // Create new entity
-    const entityId = generateId('entity');
-    insertEntity({
-      id: entityId,
-      name: entity.text,
-      type: entity.type,
-      frequency: entity.frequency,
+    // Link entities to document
+    for (const [entityText, entityId] of entityMap.entries()) {
+      const entity = entities.find((e: any) => e.text.toLowerCase() === entityText);
+      if (entity) {
+        insertDocumentEntity({
+          id: generateId('doc_entity'),
+          document_id: capturedData.id,
+          entity_id: entityId,
+          frequency: entity.frequency,
+        });
+      }
+    }
+
+    // Add activity
+    addActivityToFeed({
+      user_id: userId,
+      workspace_id: null,
+      action_type: 'captured',
+      entity_type: 'document',
+      entity_id: capturedData.id,
+      metadata: JSON.stringify({ title: extraction.data.title }),
+      is_public: 1,
+      created_at: Date.now(),
     });
-    entityMap.set(entity.text.toLowerCase(), entityId);
-  }
-}
 
-// Link entities to document
-for (const [entityText, entityId] of entityMap.entries()) {
-  const entity = entities.find((e: { text: string; }) => e.text.toLowerCase() === entityText);
-  if (entity) {
-    insertDocumentEntity({
-      id: generateId('doc_entity'),
-      document_id: capturedData.id,
-      entity_id: entityId,
-      frequency: entity.frequency,
-    });
-  }
-}
+    // Update user stats
+    db.exec(`
+      UPDATE user_profiles 
+      SET total_documents = total_documents + 1,
+          total_words_read = total_words_read + ?
+      WHERE user_id = ?
+    `, [extraction.data.wordCount || 0, userId]);
 
-// Find co-occurrences and create relationships
-const coOccurrences = findCoOccurrences(entities, extraction.data.textContent || '');
-for (const coOcc of coOccurrences) {
-  const entity1Id = entityMap.get(coOcc.entity1);
-  const entity2Id = entityMap.get(coOcc.entity2);
-  
-  if (entity1Id && entity2Id && entity1Id !== entity2Id) {
-    insertEntityRelationship({
-      id: generateId('rel'),
-      entity_a_id: entity1Id,
-      entity_b_id: entity2Id,
-      relationship_type: 'co_occurs',
-      strength: coOcc.strength,
-    });
-  }
-}
-
-console.log(`✅ Extracted and linked ${entityMap.size} entities`);
-
-    const stats = getDatabaseStats();
-    const totalChunks = getTotalChunkCount();
+    addUserXP(userId, 10);
 
     res.json({
       success: true,
-      message: 'Content captured, extracted, and chunked successfully',
       id: capturedData.id,
       wordCount: extraction.data.wordCount,
       chunkCount: chunks.length,
-      totalDocuments: stats.totalDocuments,
-      totalChunks: totalChunks,
     });
   } catch (error) {
     console.error('❌ Capture error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to capture content',
-      message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 });
 
-// Get graph data (nodes and edges)
-// NEW GRAPH API - Simple and meaningful
-// NEW GRAPH API - Simple and meaningful
-app.get('/api/graph', async (_req: Request, res: Response) => {
-  try {
-    console.log('🕸️ Building document similarity graph...');
-    
-    // Get all documents with embeddings
-    const documents = getAllDocuments(100);
-    
-    // Build similarity matrix using existing embeddings
-    const nodes = [];
-    const edges = [];
-    
-    // Create document nodes
-    for (const doc of documents) {
-      nodes.push({
-        id: doc.id,
-        label: doc.title || 'Untitled',
-        type: 'document',
-        size: Math.log((doc.word_count || 100) / 100 + 1) * 10 + 5,
-        color: '#4f46e5',
-        url: doc.url,
-        wordCount: doc.word_count,
-      });
-    }
-    
-    // Create edges based on embedding similarity
-    for (let i = 0; i < documents.length; i++) {
-      for (let j = i + 1; j < documents.length; j++) {
-        const doc1 = documents[i];
-        const doc2 = documents[j];
-        
-        // Get first chunk embedding for each document
-        const chunks1 = getChunksByDocumentId(doc1.id);
-        const chunks2 = getChunksByDocumentId(doc2.id);
-        
-        if (chunks1.length === 0 || chunks2.length === 0) continue;
-        if (!chunks1[0].embedding || !chunks2[0].embedding) continue;
-        
-        const emb1 = JSON.parse(chunks1[0].embedding);
-        const emb2 = JSON.parse(chunks2[0].embedding);
-        
-        // Calculate cosine similarity
-        const similarity = cosineSimilarity(emb1, emb2);
-        
-        // Only connect if similarity is high enough
-        if (similarity > 0.5) {
-          edges.push({
-            id: `${doc1.id}-${doc2.id}`,
-            source: doc1.id,
-            target: doc2.id,
-            size: similarity * 3,
-            color: `rgba(79, 70, 229, ${similarity * 0.5})`,
-            similarity: similarity,
-          });
-        }
-      }
-    }
-    
-    console.log(`✅ Graph: ${nodes.length} documents, ${edges.length} connections`);
-    
-    res.json({
-      nodes,
-      edges,
-      stats: {
-        totalNodes: nodes.length,
-        totalEdges: edges.length,
-        documents: documents.length,
-      },
-    });
-  } catch (error) {
-    console.error('❌ Graph error:', error);
-    res.status(500).json({
-      error: 'Failed to build graph',
-      message: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
-});
 
 // Get AI-generated insights
 app.get('/api/insights', async (_req: Request, res: Response) => {
@@ -851,17 +744,33 @@ app.get('/api/captures', (req: Request, res: Response) => {
 // Database stats endpoint (ENHANCED)
 app.get('/api/stats', (_req: Request, res: Response) => {
   try {
-    const stats = getDatabaseStats();
-    const totalChunks = getTotalChunkCount();
+    const userId = getUserIdFromToken(_req.headers.authorization) || 'user_default';
+    
+    // Get stats for THIS USER only
+    const docsResult = db.exec(
+      'SELECT COUNT(*) as count FROM documents WHERE user_id = ?',
+      [userId]
+    );
+    const totalDocuments = docsResult.length > 0 ? (docsResult[0].values[0][0] as number) : 0;
+    
+    const wordsResult = db.exec(
+      'SELECT SUM(word_count) as total FROM documents WHERE user_id = ?',
+      [userId]
+    );
+    const totalWords = wordsResult.length > 0 ? (wordsResult[0].values[0][0] as number || 0) : 0;
+    
+    const avgWords = totalDocuments > 0 ? Math.round(totalWords / totalDocuments) : 0;
+    
+    const totalChunks = getTotalChunkCount(); // Keep global for now
     
     res.json({
-      ...stats,
+      totalDocuments,
+      totalWords,
+      averageWords: avgWords,
       totalChunks,
     });
   } catch (error) {
-    res.status(500).json({
-      error: 'Failed to get stats',
-    });
+    res.status(500).json({ error: 'Failed to get stats' });
   }
 });
 
@@ -1547,46 +1456,207 @@ function generateKnowledgeInsights(topics: Topic[], connections: any[]): any[] {
 }
 
 // Search endpoint (placeholder for Phase 2)
-// Search endpoint (SEMANTIC SEARCH)
-app.post('/api/search', async (req: Request, res: Response) => {
-  try {
-    const { query, limit } = req.body;
 
-    if (!query || typeof query !== 'string') {
+// Search documents with filters
+app.get('/api/search', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    const query = req.query.q as string;
+    const dateRange = req.query.dateRange as string || 'all';
+    const collections = (req.query.collections as string || '').split(',').filter(Boolean);
+    const fileTypes = (req.query.fileTypes as string || '').split(',').filter(Boolean);
+    const sortBy = req.query.sortBy as string || 'relevance';
+    const sortOrder = req.query.sortOrder as string || 'desc';
+
+    if (!query) {
       return res.status(400).json({ error: 'Query is required' });
     }
 
-    console.log(`🔍 Search request: "${query}" (limit: ${limit || 10})`);
+    // Calculate date filter
+    let dateFilter = '';
+    const now = Date.now();
+    
+    switch (dateRange) {
+      case 'today':
+        dateFilter = `AND created_at >= ${now - 24 * 60 * 60 * 1000}`;
+        break;
+      case 'week':
+        dateFilter = `AND created_at >= ${now - 7 * 24 * 60 * 60 * 1000}`;
+        break;
+      case 'month':
+        dateFilter = `AND created_at >= ${now - 30 * 24 * 60 * 60 * 1000}`;
+        break;
+      case 'year':
+        dateFilter = `AND created_at >= ${now - 365 * 24 * 60 * 60 * 1000}`;
+        break;
+    }
 
-    const results = await searchSimilarChunks(query, limit || 10);
-
-    res.json({
-      results,
-      count: results.length,
+    // Get embedding for query
+    const embeddingResponse = await fetch('http://localhost:8000/embed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: query }),
     });
+
+    if (!embeddingResponse.ok) {
+      throw new Error('Failed to generate embedding');
+    }
+
+    const { embedding: queryEmbedding } = await embeddingResponse.json();
+
+    // Build SQL query
+    let sql = `
+      SELECT 
+        d.*,
+        (1 - (embedding <-> ?)) as similarity
+      FROM documents d
+      WHERE user_id = ? ${dateFilter}
+    `;
+
+    const params: any[] = [JSON.stringify(queryEmbedding), userId];
+
+    // Add collection filter
+    if (collections.length > 0) {
+      sql += ` AND id IN (
+        SELECT document_id FROM collection_documents 
+        WHERE collection_id IN (${collections.map(() => '?').join(',')})
+      )`;
+      params.push(...collections);
+    }
+
+    // Add ordering
+    if (sortBy === 'relevance') {
+      sql += ' ORDER BY similarity DESC';
+    } else if (sortBy === 'date') {
+      sql += ` ORDER BY created_at ${sortOrder === 'asc' ? 'ASC' : 'DESC'}`;
+    } else if (sortBy === 'title') {
+      sql += ` ORDER BY title ${sortOrder === 'asc' ? 'ASC' : 'DESC'}`;
+    }
+
+    sql += ' LIMIT 50';
+
+    const result = db.exec(sql, params);
+
+    if (result.length === 0) {
+      return res.json({ results: [], query });
+    }
+
+    const columns = result[0].columns;
+    const results = result[0].values.map(row => {
+      const obj: any = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+
+    res.json({ results, query, count: results.length });
   } catch (error) {
     console.error('❌ Search error:', error);
-    res.status(500).json({
-      error: 'Search failed',
-      message: error instanceof Error ? error.message : 'Unknown error',
-    });
+    res.status(500).json({ error: 'Search failed' });
   }
 });
-
-// Get all documents (placeholder - same as captures for now)
-app.get('/api/documents', (_req: Request, res: Response) => {
+// Profile setup endpoint (for onboarding)
+app.post('/api/profile/setup', async (req: Request, res: Response) => {
   try {
-    const documents = getAllDocuments(100);
-    res.json({
-      documents,
-      total: getDocumentCount(),
+    const { user_id, username, display_name, bio, email, avatar } = req.body;
+
+    if (!user_id || !username || !display_name) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        message: 'user_id, username, and display_name are required' 
+      });
+    }
+
+    // Check if username is already taken
+    const existingUser = db.exec(
+      'SELECT user_id FROM user_profiles WHERE username = ? AND user_id != ?',
+      [username.toLowerCase(), user_id]
+    );
+
+    if (existingUser.length > 0 && existingUser[0].values.length > 0) {
+      return res.status(400).json({ 
+        error: 'Username taken',
+        message: 'This username is already in use. Please choose another.' 
+      });
+    }
+
+    // Create or update profile
+    upsertUserProfile({
+      user_id,
+      username: username.toLowerCase(),
+      display_name,
+      avatar: avatar || null,
+      cover_image: null,
+      bio: bio || null,
+      level: 1,
+      xp: 0,
+      coins: 0,
+      streak_days: 0,
+      last_active: Date.now(),
+      total_documents: 0,
+      total_words_read: 0,
+      achievements: null,
+      preferences: null,
+      is_public: 1,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    });
+
+    // Send welcome email (async, don't wait)
+    if (email) {
+      const { sendWelcomeEmail } = require('./email');
+      sendWelcomeEmail(email, display_name).catch((err: any) => {
+        console.error('Email error:', err);
+      });
+    }
+
+    // Create welcome notification
+    createNotification({
+      user_id,
+      type: 'welcome',
+      title: 'Welcome to Open Context! 🎉',
+      message: 'Start capturing and organizing your knowledge today',
+      icon: '👋',
+      priority: 'high',
+    });
+
+    console.log(`✅ Profile created for user: ${username}`);
+
+    // Send response ONCE
+    return res.json({ 
+      success: true,
+      message: 'Profile created successfully',
+      profile: {
+        user_id,
+        username,
+        display_name,
+      }
     });
   } catch (error) {
-    res.status(500).json({
-      error: 'Failed to retrieve documents',
-      documents: [],
-      total: 0,
+    console.error('❌ Profile setup error:', error);
+    
+    // Only send error if response hasn't been sent
+    if (!res.headersSent) {
+      return res.status(500).json({ 
+        error: 'Failed to setup profile',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+});
+// Get all documents (placeholder - same as captures for now)
+app.get('/api/documents', (req: Request, res: Response) => {
+  try {
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    const documents = getAllDocuments(100, 0, userId);
+    
+    res.json({
+      documents,
+      total: documents.length,
     });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to retrieve documents' });
   }
 });
 
@@ -1619,70 +1689,308 @@ app.get('/api/concept-graph', async (_req: Request, res: Response) => {
     });
   }
 });
-app.get('/api/profile', (req: Request, res: Response) => {
+// Import documents
+app.post('/api/import', async (req: Request, res: Response) => {
   try {
-    const userId = 'user_default'; // TODO: Replace with real auth
-    let profile = getUserProfile(userId);
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    const { documents } = req.body;
 
-    if (!profile) {
-      // Create default profile
-      profile = {
-        user_id: userId,
-        username: 'anonymous',
-        display_name: 'Anonymous User',
-        avatar: null,
-        bio: null,
-        level: 1,
-        xp: 0,
-        coins: 0,
-        streak_days: 0,
-        last_active: null,
-        total_documents: 0,
-        total_words_read: 0,
-        achievements: null,
-        preferences: null,
-        is_public: 1,
-        created_at: Date.now(),
-      };
-      upsertUserProfile(profile);
+    if (!documents || !Array.isArray(documents)) {
+      return res.status(400).json({ error: 'Invalid import data' });
     }
 
-    res.json({ profile });
+    let imported = 0;
+
+    for (const doc of documents) {
+      try {
+        const newId = `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+        db.exec(`
+          INSERT INTO documents (
+            id, user_id, title, content, url, 
+            word_count, embedding, metadata, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          newId,
+          userId,
+          doc.title || 'Untitled',
+          doc.content || '',
+          doc.url || null,
+          doc.word_count || 0,
+          doc.embedding || null,
+          doc.metadata || null,
+          Date.now(),
+        ]);
+
+        imported++;
+      } catch (error) {
+        console.error('Failed to import document:', error);
+      }
+    }
+
+    res.json({
+      success: true,
+      imported,
+      total: documents.length,
+    });
   } catch (error) {
-    console.error('❌ Get profile error:', error);
-    res.status(500).json({ error: 'Failed to get profile' });
+    console.error('❌ Import error:', error);
+    res.status(500).json({ error: 'Failed to import documents' });
   }
 });
 
-// Update user profile
-app.put('/api/profile', (req: Request, res: Response) => {
-  try {
-    const userId = 'user_default';
-    const updates = req.body;
 
-    const profile = getUserProfile(userId);
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
+// Get enhanced analytics
+app.get('/api/analytics/enhanced', (req: Request, res: Response) => {
+  try {
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    const timeRange = req.query.range || 'week'; // week, month, year, all
+
+    // Calculate date range
+    let startDate = 0;
+    const now = Date.now();
+    
+    switch (timeRange) {
+      case 'week':
+        startDate = now - 7 * 24 * 60 * 60 * 1000;
+        break;
+      case 'month':
+        startDate = now - 30 * 24 * 60 * 60 * 1000;
+        break;
+      case 'year':
+        startDate = now - 365 * 24 * 60 * 60 * 1000;
+        break;
+      default:
+        startDate = 0;
     }
 
-    const updatedProfile = {
-      ...profile,
-      ...updates,
-    };
+    // Total documents - FIX TYPE HERE
+    const docsResult = db.exec(
+      'SELECT COUNT(*) as count FROM documents WHERE user_id = ? AND created_at >= ?',
+      [userId, startDate]
+    );
+    const totalDocs = docsResult.length > 0 ? (docsResult[0].values[0][0] as number) : 0;
 
-    upsertUserProfile(updatedProfile);
+    // Total words read - FIX TYPE HERE
+    const wordsResult = db.exec(
+      'SELECT SUM(word_count) as total FROM documents WHERE user_id = ? AND created_at >= ?',
+      [userId, startDate]
+    );
+    const totalWords = wordsResult.length > 0 ? (wordsResult[0].values[0][0] as number || 0) : 0;
 
-    res.json({ success: true, profile: updatedProfile });
+    // Documents by day (for chart)
+    const docsByDayResult = db.exec(`
+      SELECT 
+        date(created_at / 1000, 'unixepoch') as day,
+        COUNT(*) as count
+      FROM documents
+      WHERE user_id = ? AND created_at >= ?
+      GROUP BY day
+      ORDER BY day ASC
+    `, [userId, startDate]);
+
+    const docsByDay = docsByDayResult.length > 0
+      ? docsByDayResult[0].values.map(row => ({
+          date: row[0] as string,
+          count: row[1] as number,
+        }))
+      : [];
+
+    // Words by day (for chart)
+    const wordsByDayResult = db.exec(`
+      SELECT 
+        date(created_at / 1000, 'unixepoch') as day,
+        SUM(word_count) as total
+      FROM documents
+      WHERE user_id = ? AND created_at >= ?
+      GROUP BY day
+      ORDER BY day ASC
+    `, [userId, startDate]);
+
+    const wordsByDay = wordsByDayResult.length > 0
+      ? wordsByDayResult[0].values.map(row => ({
+          date: row[0] as string,
+          words: (row[1] as number) || 0,
+        }))
+      : [];
+
+    // Top collections
+    const topCollectionsResult = db.exec(`
+      SELECT 
+        c.id,
+        c.name,
+        COUNT(cd.document_id) as doc_count
+      FROM collections c
+      LEFT JOIN collection_documents cd ON c.id = cd.collection_id
+      WHERE c.user_id = ?
+      GROUP BY c.id
+      ORDER BY doc_count DESC
+      LIMIT 5
+    `, [userId]);
+
+    const topCollections = topCollectionsResult.length > 0
+      ? topCollectionsResult[0].values.map(row => ({
+          id: row[0] as string,
+          name: row[1] as string,
+          count: row[2] as number,
+        }))
+      : [];
+
+    // Reading streak
+    const profile = getUserProfile(userId);
+    const streak = profile?.streak_days || 0;
+
+    // Goals progress
+    const goalsResult = db.exec(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active
+      FROM learning_goals
+      WHERE user_id = ?
+    `, [userId]);
+
+    const goals = goalsResult.length > 0
+      ? {
+          total: (goalsResult[0].values[0][0] as number) || 0,
+          completed: (goalsResult[0].values[0][1] as number) || 0,
+          active: (goalsResult[0].values[0][2] as number) || 0,
+        }
+      : { total: 0, completed: 0, active: 0 };
+
+    // Achievements
+    const achievementsResult = db.exec(`
+      SELECT COUNT(*) as count
+      FROM user_achievements
+      WHERE user_id = ?
+    `, [userId]);
+
+    const achievementsCount = achievementsResult.length > 0
+      ? (achievementsResult[0].values[0][0] as number)
+      : 0;
+
+    // Most active days of week
+    const activeDaysResult = db.exec(`
+      SELECT 
+        CAST(strftime('%w', created_at / 1000, 'unixepoch') AS INTEGER) as day_of_week,
+        COUNT(*) as count
+      FROM documents
+      WHERE user_id = ? AND created_at >= ?
+      GROUP BY day_of_week
+      ORDER BY count DESC
+    `, [userId, startDate]);
+
+    const activeDays = activeDaysResult.length > 0
+      ? activeDaysResult[0].values.map(row => ({
+          day: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][row[0] as number],
+          count: row[1] as number,
+        }))
+      : [];
+
+    // Average words per document - FIX TYPE HERE
+    const avgWords = totalDocs > 0 ? Math.round(totalWords / totalDocs) : 0;
+
+    res.json({
+      summary: {
+        totalDocuments: totalDocs,
+        totalWords: totalWords,
+        avgWordsPerDoc: avgWords,
+        streak: streak,
+        goalsCompleted: goals.completed,
+        goalsActive: goals.active,
+        achievements: achievementsCount,
+      },
+      charts: {
+        docsByDay,
+        wordsByDay,
+        topCollections,
+        activeDays,
+      },
+      timeRange,
+    });
+  } catch (error) {
+    console.error('❌ Enhanced analytics error:', error);
+    res.status(500).json({ error: 'Failed to get analytics' });
+  }
+});
+
+// Get reading time analytics
+app.get('/api/analytics/reading-time', (req: Request, res: Response) => {
+  try {
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+
+    // Estimate reading time (avg 200 words per minute)
+    const result = db.exec(`
+      SELECT SUM(word_count) as total_words
+      FROM documents
+      WHERE user_id = ?
+    `, [userId]);
+
+    const totalWords = result.length > 0 ? ((result[0].values[0][0] as number) || 0) : 0;
+    const readingMinutes = Math.round(totalWords / 200);
+    const readingHours = Math.floor(readingMinutes / 60);
+    const remainingMinutes = readingMinutes % 60;
+
+    res.json({
+      totalWords,
+      totalMinutes: readingMinutes,
+      formatted: `${readingHours}h ${remainingMinutes}m`,
+      hours: readingHours,
+      minutes: remainingMinutes,
+    });
+  } catch (error) {
+    console.error('❌ Reading time error:', error);
+    res.status(500).json({ error: 'Failed to get reading time' });
+  }
+});
+
+
+
+// Update profile
+app.put('/api/profile', (req: Request, res: Response) => {
+  try {
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    const { username, display_name, avatar, cover_image, bio, preferences } = req.body;
+
+    // Update profile
+    db.exec(`
+      UPDATE user_profiles
+      SET 
+        username = COALESCE(?, username),
+        display_name = COALESCE(?, display_name),
+        avatar = ?,
+        cover_image = ?,
+        bio = ?,
+        preferences = ?,
+        updated_at = ?
+      WHERE user_id = ?
+    `, [
+      username,
+      display_name,
+      avatar || null,
+      cover_image || null,
+      bio || null,
+      preferences ? JSON.stringify(preferences) : null,
+      Date.now(),
+      userId,
+    ]);
+
+    // Get updated profile
+    const profile = getUserProfile(userId);
+
+    res.json({ success: true, profile });
   } catch (error) {
     console.error('❌ Update profile error:', error);
     res.status(500).json({ error: 'Failed to update profile' });
   }
 });
 
+
 // Get unlocked achievements
 app.get('/api/achievements/unlocked', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     
     const result = db.exec(`
       SELECT a.*, ua.unlocked_at, ua.progress
@@ -1715,7 +2023,7 @@ app.get('/api/achievements/unlocked', (req: Request, res: Response) => {
 // Get all achievements (locked and unlocked)
 app.get('/api/achievements', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+  const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     
     // Get all achievements
     const allResult = db.exec('SELECT * FROM achievements ORDER BY rarity DESC, xp_reward DESC');
@@ -1760,6 +2068,40 @@ app.get('/api/achievements', (req: Request, res: Response) => {
   }
 });
 
+// Get current user's profile
+// Get current user's profile
+app.get('/api/profile', (req: Request, res: Response) => {
+  try {
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    
+    const profile = getUserProfile(userId);
+    
+    if (!profile) {
+      return res.status(404).json({ 
+        error: 'Profile not found',
+        needsSetup: true 
+      });
+    }
+
+    // Get additional stats
+    const achievementsResult = db.exec(
+      'SELECT COUNT(*) as count FROM user_achievements WHERE user_id = ?',
+      [userId]
+    );
+    const achievementsCount = achievementsResult.length > 0 ? achievementsResult[0].values[0][0] : 0;
+
+    res.json({
+      profile: {
+        ...profile,
+        achievements_count: achievementsCount,
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get profile error:', error);
+    res.status(500).json({ error: 'Failed to get profile' });
+  }
+});
+
 // Delete notification
 app.delete('/api/notifications/:id', (req: Request, res: Response) => {
   try {
@@ -1776,7 +2118,7 @@ app.delete('/api/notifications/:id', (req: Request, res: Response) => {
 // Get user goals
 app.get('/api/goals', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const goals = getUserGoals(userId);
 
     res.json({ goals });
@@ -1789,7 +2131,7 @@ app.get('/api/goals', (req: Request, res: Response) => {
 // Create goal
 app.post('/api/goals', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { title, description, category, target_type, target_value, deadline, difficulty } = req.body;
 
     if (!title || !target_type || !target_value) {
@@ -1865,7 +2207,7 @@ app.put('/api/goals/:id/progress', (req: Request, res: Response) => {
 // Get user workspaces
 app.get('/api/workspaces', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const workspaces = getUserWorkspaces(userId);
 
     res.json({ workspaces });
@@ -1878,7 +2220,7 @@ app.get('/api/workspaces', (req: Request, res: Response) => {
 // Create workspace
 app.post('/api/workspaces', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { name, description, type, is_public } = req.body;
 
     if (!name) {
@@ -1912,7 +2254,7 @@ import { generateDailyDigest } from './digestGenerator';
 // Get daily digest
 app.get('/api/digest', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const digest = generateDailyDigest(userId);
 
     res.json({ digest });
@@ -1925,7 +2267,7 @@ app.get('/api/digest', (req: Request, res: Response) => {
 // Share collection with workspace
 app.post('/api/workspaces/:id/share', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { collection_id, permissions } = req.body;
 
     if (!collection_id) {
@@ -1971,50 +2313,14 @@ app.get('/api/workspaces/:id/activity', (req: Request, res: Response) => {
   }
 });
 
-// ============= SOCIAL FEED =============
-
-// Get public activity feed (Discover page)
-app.get('/api/feed', (req: Request, res: Response) => {
-  try {
-    const limit = parseInt(req.query.limit as string) || 50;
-    const activity = getPublicActivity(limit);
-
-    // Enrich with user and entity details
-    const enrichedActivity = activity.map(item => {
-      const user = getUserProfile(item.user_id);
-      let entity = null;
-
-      if (item.entity_type === 'document') {
-        entity = getDocumentById(item.entity_id);
-      } else if (item.entity_type === 'collection') {
-        entity = getCollectionById(item.entity_id);
-      }
-
-      return {
-        ...item,
-        user: user ? {
-          username: user.username,
-          display_name: user.display_name,
-          avatar: user.avatar,
-          level: user.level,
-        } : null,
-        entity,
-      };
-    });
-
-    res.json({ activity: enrichedActivity });
-  } catch (error) {
-    console.error('❌ Get feed error:', error);
-    res.status(500).json({ error: 'Failed to get feed' });
-  }
-});
 
 // ============= NOTIFICATIONS =============
 
 // Get user notifications
 app.get('/api/notifications', (req: Request, res: Response) => {
   try {
-    const userId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    
     const result = db.exec(`
       SELECT * FROM notifications
       WHERE user_id = ?
@@ -2041,7 +2347,6 @@ app.get('/api/notifications', (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to get notifications' });
   }
 });
-
 // Mark notification as read
 app.put('/api/notifications/:id/read', (req: Request, res: Response) => {
   try {
@@ -2100,46 +2405,17 @@ app.get('/api/leaderboard', (req: Request, res: Response) => {
   }
 });
 
-// ============= HOOK INTO EXISTING ENDPOINTS =============
-
-// Update capture endpoint to track progress
-const originalCaptureHandler = app.post('/api/capture', async (req: Request, res: Response) => {
-  // ... existing capture logic ...
-  
-  // After successful capture, add XP and update stats
-  const userId = 'user_default';
-  addUserXP(userId, 10); // 10 XP per capture
-
-  // Update user stats
-  const profile = getUserProfile(userId);
-  if (profile) {
-    profile.total_documents += 1;
-    upsertUserProfile(profile);
-  }
-
-  // Add to activity feed
-  addActivityToFeed({
-    user_id: userId,
-    workspace_id: null,
-    action_type: 'captured',
-    entity_type: 'document',
-    entity_id: 'doc_id', // Replace with actual doc ID
-    metadata: null,
-    is_public: 1,
-    created_at: Date.now(),
-  });
-});
 
 // Get user conversations
 app.get('/api/messages/conversations', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
-    const conversations = getUserConversations(currentUserId);
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    const conversations = getUserConversations(userId);
 
     // Enrich with other participant info and last message
     const enrichedConversations = conversations.map(conv => {
       // Determine other participant
-      const otherUserId = conv.participant1_id === currentUserId
+      const otherUserId = conv.participant1_id === userId
         ? conv.participant2_id
         : conv.participant1_id;
 
@@ -2191,14 +2467,14 @@ app.get('/api/messages/conversations', (req: Request, res: Response) => {
 // Get or create conversation with user
 app.post('/api/messages/conversations', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { user_id } = req.body;
 
     if (!user_id) {
       return res.status(400).json({ error: 'user_id is required' });
     }
 
-    const conversationId = getOrCreateConversation(currentUserId, user_id);
+    const conversationId = getOrCreateConversation(userId, user_id);
 
     res.json({ conversation_id: conversationId });
   } catch (error) {
@@ -2210,7 +2486,7 @@ app.post('/api/messages/conversations', (req: Request, res: Response) => {
 // Get messages in conversation
 app.get('/api/messages/conversations/:conversationId', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { conversationId } = req.params;
     const limit = parseInt(req.query.limit as string) || 50;
 
@@ -2218,7 +2494,7 @@ app.get('/api/messages/conversations/:conversationId', (req: Request, res: Respo
     const convResult = db.exec(`
       SELECT * FROM conversations
       WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
-    `, [conversationId, currentUserId, currentUserId]);
+    `, [conversationId, userId, userId]);
 
     if (convResult.length === 0 || convResult[0].values.length === 0) {
       return res.status(403).json({ error: 'Not authorized' });
@@ -2227,7 +2503,7 @@ app.get('/api/messages/conversations/:conversationId', (req: Request, res: Respo
     const messages = getConversationMessages(conversationId, limit);
 
     // Mark messages as read
-    markMessagesAsRead(conversationId, currentUserId);
+    markMessagesAsRead(conversationId, userId);
 
     res.json({ messages });
   } catch (error) {
@@ -2239,7 +2515,7 @@ app.get('/api/messages/conversations/:conversationId', (req: Request, res: Respo
 // Send message
 app.post('/api/messages/send', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { conversation_id, content } = req.body;
 
     if (!conversation_id || !content?.trim()) {
@@ -2250,13 +2526,13 @@ app.post('/api/messages/send', (req: Request, res: Response) => {
     const convResult = db.exec(`
       SELECT * FROM conversations
       WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
-    `, [conversation_id, currentUserId, currentUserId]);
+    `, [conversation_id, userId, userId]);
 
     if (convResult.length === 0 || convResult[0].values.length === 0) {
       return res.status(403).json({ error: 'Not authorized' });
     }
 
-    const message = sendMessage(conversation_id, currentUserId, content.trim());
+    const message = sendMessage(conversation_id, userId, content.trim());
 
     // Get other participant to notify
     const convColumns = convResult[0].columns;
@@ -2266,12 +2542,12 @@ app.post('/api/messages/send', (req: Request, res: Response) => {
       conv[col] = convRow[idx];
     });
 
-    const otherUserId = conv.participant1_id === currentUserId
+    const otherUserId = conv.participant1_id === userId
       ? conv.participant2_id
       : conv.participant1_id;
 
     // Create notification
-    const currentUser = getUserProfile(currentUserId);
+    const currentUser = getUserProfile(userId);
     createNotification({
       user_id: otherUserId,
       type: 'message',
@@ -2292,8 +2568,8 @@ app.post('/api/messages/send', (req: Request, res: Response) => {
 // Get unread message count
 app.get('/api/messages/unread-count', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
-    const count = getUnreadCount(currentUserId);
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
+    const count = getUnreadCount(userId);
 
     res.json({ count });
   } catch (error) {
@@ -2305,14 +2581,14 @@ app.get('/api/messages/unread-count', (req: Request, res: Response) => {
 // Delete conversation
 app.delete('/api/messages/conversations/:conversationId', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { conversationId } = req.params;
 
     // Verify user is participant
     const convResult = db.exec(`
       SELECT * FROM conversations
       WHERE id = ? AND (participant1_id = ? OR participant2_id = ?)
-    `, [conversationId, currentUserId, currentUserId]);
+    `, [conversationId, userId, userId]);
 
     if (convResult.length === 0 || convResult[0].values.length === 0) {
       return res.status(403).json({ error: 'Not authorized' });
@@ -2330,7 +2606,7 @@ app.delete('/api/messages/conversations/:conversationId', (req: Request, res: Re
 // Update typing indicator
 app.post('/api/messages/typing', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { conversation_id, typing } = req.body;
 
     if (!conversation_id) {
@@ -2338,16 +2614,16 @@ app.post('/api/messages/typing', (req: Request, res: Response) => {
     }
 
     if (typing) {
-      const id = `typing_${currentUserId}_${conversation_id}`;
+      const id = `typing_${userId}_${conversation_id}`;
       db.exec(`
         INSERT OR REPLACE INTO typing_indicators (id, conversation_id, user_id, started_at)
         VALUES (?, ?, ?, ?)
-      `, [id, conversation_id, currentUserId, Date.now()]);
+      `, [id, conversation_id, userId, Date.now()]);
     } else {
       db.exec(`
         DELETE FROM typing_indicators
         WHERE conversation_id = ? AND user_id = ?
-      `, [conversation_id, currentUserId]);
+      `, [conversation_id, userId]);
     }
 
     res.json({ success: true });
@@ -2825,7 +3101,7 @@ app.get('/api/challenges/daily', (req: Request, res: Response) => {
 app.get('/api/users/:userId/profile', (req: Request, res: Response) => {
   try {
     const targetUserId = req.params.userId;
-    const currentUserId = 'user_default'; // TODO: Get from auth
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default'; // TODO: Get from auth
 
     const profile = getUserProfile(targetUserId);
 
@@ -2838,7 +3114,7 @@ app.get('/api/users/:userId/profile', (req: Request, res: Response) => {
 
     res.json({
       profile,
-      isOwnProfile: currentUserId === targetUserId,
+      isOwnProfile: userId === targetUserId,
       isFollowing,
     });
   } catch (error) {
@@ -2917,7 +3193,7 @@ app.get('/api/users/:userId/activity', (req: Request, res: Response) => {
 // Follow user
 app.post('/api/follow', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default'; // TODO: Get from auth
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default'; // TODO: Get from auth
     const { user_id: targetUserId } = req.body;
 
     if (!targetUserId) {
@@ -2929,7 +3205,7 @@ app.post('/api/follow', (req: Request, res: Response) => {
     db.exec(`
       INSERT OR IGNORE INTO follows (id, follower_id, following_id, created_at)
       VALUES (?, ?, ?, ?)
-    `, [id, currentUserId, targetUserId, Date.now()]);
+    `, [id, userId, targetUserId, Date.now()]);
 
     // Create notification for target user
     createNotification({
@@ -2951,7 +3227,7 @@ app.post('/api/follow', (req: Request, res: Response) => {
 // Unfollow user
 app.post('/api/unfollow', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default'; // TODO: Get from auth
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default'; // TODO: Get from auth
     const { user_id: targetUserId } = req.body;
 
     if (!targetUserId) {
@@ -2961,7 +3237,7 @@ app.post('/api/unfollow', (req: Request, res: Response) => {
     db.exec(`
       DELETE FROM follows
       WHERE follower_id = ? AND following_id = ?
-    `, [currentUserId, targetUserId]);
+    `, [userId, targetUserId]);
 
     res.json({ success: true });
   } catch (error) {
@@ -3067,18 +3343,62 @@ app.get('/api/workspaces/:id/collections', (req: Request, res: Response) => {
 });
 
 // Invite member to workspace
-app.post('/api/workspaces/:id/invite', (req: Request, res: Response) => {
+// Send workspace invitation
+app.post('/api/workspaces/:id/invite', async (req: Request, res: Response) => {
   try {
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default'; // TODO: Get from auth
     const { email, role } = req.body;
+    const workspaceId = req.params.id;
 
     if (!email || !role) {
-      return res.status(400).json({ error: 'Email and role are required' });
+      return res.status(400).json({ error: 'Email and role required' });
     }
 
-    // TODO: Send invitation email
-    // TODO: Create pending invitation record
+    // Get workspace
+    const workspaceResult = db.exec('SELECT * FROM workspaces WHERE id = ?', [workspaceId]);
+    if (workspaceResult.length === 0) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
 
-    res.json({ success: true, message: 'Invitation sent' });
+    const workspace: any = {};
+    workspaceResult[0].columns.forEach((col, idx) => {
+      workspace[col] = workspaceResult[0].values[0][idx];
+    });
+
+    // Get inviter info
+    const inviterProfile = getUserProfile(userId);
+
+    // Generate invite token
+    const inviteToken = generateId('invite');
+    const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
+
+    // Store invitation
+    db.exec(`
+      INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, invite_token, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      generateId('inv'),
+      workspaceId,
+      email,
+      role,
+      userId,
+      inviteToken,
+      expiresAt,
+      Date.now(),
+    ]);
+
+    // Send invitation email
+    const { sendWorkspaceInvitation } = require('./email');
+    await sendWorkspaceInvitation({
+      to: email,
+      inviterName: inviterProfile?.display_name || 'Someone',
+      workspaceName: workspace.name,
+      workspaceDescription: workspace.description,
+      role,
+      inviteToken,
+    });
+
+    res.json({ success: true, message: 'Invitation sent!' });
   } catch (error) {
     console.error('❌ Invite error:', error);
     res.status(500).json({ error: 'Failed to send invitation' });
@@ -3117,7 +3437,7 @@ app.put('/api/workspaces/:workspaceId/members/:memberId/role', (req: Request, re
 // Get enriched feed with likes and comments count
 app.get('/api/feed', async (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const filter = req.query.filter || 'all';
     const limit = parseInt(req.query.limit as string) || 50;
 
@@ -3131,7 +3451,7 @@ app.get('/api/feed', async (req: Request, res: Response) => {
         WHERE f.follower_id = ? AND af.is_public = 1
         ORDER BY af.created_at DESC
         LIMIT ?
-      `, [currentUserId, limit]);
+      `, [userId, limit]);
     } else if (filter === 'trending') {
       // Get trending activity (most liked/commented in last 7 days)
       activityResult = db.exec(`
@@ -3201,7 +3521,7 @@ app.get('/api/feed', async (req: Request, res: Response) => {
       // Check if current user liked
       const userLikeResult = db.exec(
         'SELECT id FROM activity_likes WHERE activity_id = ? AND user_id = ?',
-        [item.id, currentUserId]
+        [item.id, userId]
       );
       const is_liked = userLikeResult.length > 0 && userLikeResult[0].values.length > 0;
 
@@ -3237,7 +3557,7 @@ app.get('/api/feed', async (req: Request, res: Response) => {
 // Like/Unlike activity
 app.post('/api/activity/like', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { activity_id, action } = req.body;
 
     if (!activity_id || !action) {
@@ -3250,14 +3570,14 @@ app.post('/api/activity/like', (req: Request, res: Response) => {
       db.exec(`
         INSERT OR IGNORE INTO activity_likes (id, activity_id, user_id, created_at)
         VALUES (?, ?, ?, ?)
-      `, [id, activity_id, currentUserId, Date.now()]);
+      `, [id, activity_id, userId, Date.now()]);
 
       // Get activity owner to notify
       const activityResult = db.exec('SELECT user_id FROM activity_feed WHERE id = ?', [activity_id]);
       if (activityResult.length > 0 && activityResult[0].values.length > 0) {
         const ownerId = activityResult[0].values[0][0];
         
-        if (ownerId !== currentUserId) {
+        if (ownerId !== userId) {
           createNotification({
             user_id: ownerId as string,
             type: 'like',
@@ -3275,7 +3595,7 @@ app.post('/api/activity/like', (req: Request, res: Response) => {
       db.exec(`
         DELETE FROM activity_likes
         WHERE activity_id = ? AND user_id = ?
-      `, [activity_id, currentUserId]);
+      `, [activity_id, userId]);
 
       res.json({ success: true, action: 'unliked' });
     } else {
@@ -3325,7 +3645,7 @@ app.get('/api/activity/:activityId/comments', (req: Request, res: Response) => {
 // Add comment to activity
 app.post('/api/activity/comment', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { activity_id, content, parent_comment_id } = req.body;
 
     if (!activity_id || !content?.trim()) {
@@ -3337,17 +3657,17 @@ app.post('/api/activity/comment', (req: Request, res: Response) => {
     db.exec(`
       INSERT INTO activity_comments (id, activity_id, user_id, parent_comment_id, content, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `, [id, activity_id, currentUserId, parent_comment_id || null, content.trim(), Date.now()]);
+    `, [id, activity_id, userId, parent_comment_id || null, content.trim(), Date.now()]);
 
     // Get user info
-    const user = getUserProfile(currentUserId);
+    const user = getUserProfile(userId);
 
     // Notify activity owner
     const activityResult = db.exec('SELECT user_id FROM activity_feed WHERE id = ?', [activity_id]);
     if (activityResult.length > 0 && activityResult[0].values.length > 0) {
       const ownerId = activityResult[0].values[0][0];
       
-      if (ownerId !== currentUserId) {
+      if (ownerId !== userId) {
         createNotification({
           user_id: ownerId as string,
           type: 'comment',
@@ -3365,7 +3685,7 @@ app.post('/api/activity/comment', (req: Request, res: Response) => {
       comment: {
         id,
         activity_id,
-        user_id: currentUserId,
+        user_id: userId,
         content: content.trim(),
         created_at: Date.now(),
         username: user?.username || 'anonymous',
@@ -3383,7 +3703,7 @@ app.post('/api/activity/comment', (req: Request, res: Response) => {
 // Track share
 app.post('/api/activity/share', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { activity_id, platform } = req.body;
 
     if (!activity_id) {
@@ -3395,14 +3715,14 @@ app.post('/api/activity/share', (req: Request, res: Response) => {
     db.exec(`
       INSERT INTO activity_shares (id, activity_id, user_id, platform, created_at)
       VALUES (?, ?, ?, ?, ?)
-    `, [id, activity_id, currentUserId, platform || 'unknown', Date.now()]);
+    `, [id, activity_id, userId, platform || 'unknown', Date.now()]);
 
     // Notify activity owner
     const activityResult = db.exec('SELECT user_id FROM activity_feed WHERE id = ?', [activity_id]);
     if (activityResult.length > 0 && activityResult[0].values.length > 0) {
       const ownerId = activityResult[0].values[0][0];
       
-      if (ownerId !== currentUserId) {
+      if (ownerId !== userId) {
         createNotification({
           user_id: ownerId as string,
           type: 'share',
@@ -3424,7 +3744,7 @@ app.post('/api/activity/share', (req: Request, res: Response) => {
 // Delete comment
 app.delete('/api/activity/comment/:commentId', (req: Request, res: Response) => {
   try {
-    const currentUserId = 'user_default';
+    const userId = getUserIdFromToken(req.headers.authorization) || 'user_default';
     const { commentId } = req.params;
 
     // Check if user owns the comment
@@ -3436,7 +3756,7 @@ app.delete('/api/activity/comment/:commentId', (req: Request, res: Response) => 
 
     const commentOwnerId = result[0].values[0][0];
 
-    if (commentOwnerId !== currentUserId) {
+    if (commentOwnerId !== userId) {
       return res.status(403).json({ error: 'Not authorized' });
     }
 

@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import MainLayout from '@/components/Layout/MainLayout';
 import KeyboardHint from '@/components/UI/KeyboardHint';
 import Link from 'next/link';
@@ -13,6 +12,8 @@ import {
   FunnelIcon,
   ArrowPathIcon,
 } from '@heroicons/react/24/outline';
+import { useState, useEffect } from 'react';
+import AdvancedFilters, { SearchFilters } from '@/components/Search/AdvancedFilters';
 
 interface SearchResult {
   chunkId: string;
@@ -26,140 +27,118 @@ interface SearchResult {
 
 export default function SearchPage() {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [searchTime, setSearchTime] = useState(0);
+  const [results, setResults] = useState<any[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
-  const [limit, setLimit] = useState(10);
+  const [searchTime, setSearchTime] = useState(0);
 
-  const handleSearch = async (e: React.FormEvent) => {
-  e.preventDefault();
+  const [loading, setLoading] = useState(false);
+  const [collections, setCollections] = useState<any[]>([]);
+  const [filters, setFilters] = useState<SearchFilters>({
+    dateRange: 'all',
+    collections: [],
+    fileTypes: [],
+    sortBy: 'relevance',
+    sortOrder: 'desc',
+  });
 
-  if (!query.trim()) {
-    toast.error('Please enter a search query');
-    return;
-  }
+  useEffect(() => {
+    loadCollections();
+  }, []);
 
-  setLoading(true);
-  setHasSearched(true);
-  const startTime = Date.now();
-
-  try {
-    const response = await fetch('http://localhost:3001/api/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, limit }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.message || 'Search failed');
+  useEffect(() => {
+    if (query.trim()) {
+      handleSearch();
     }
+  }, [filters]);
 
-    const data = await response.json();
-    setResults(data.results || []);
-    setSearchTime(Date.now() - startTime);
-
-    if (data.results?.length > 0) {
-      toast.success(`Found ${data.results.length} results!`);
-    } else {
-      toast('No results found', { icon: '🤷' });
+  const loadCollections = async () => {
+    try {
+      const response = await fetch('http://localhost:3001/api/collections');
+      const data = await response.json();
+      setCollections(data.collections || []);
+    } catch (error) {
+      console.error('Failed to load collections:', error);
     }
-  } catch (error) {
-    console.error('Search failed:', error);
-    
-    // Better error messages
-    if (error instanceof Error) {
-      if (error.message.includes('Embedding server')) {
-        toast.error('⚠️ Embedding server is not running. Start it with: python scripts/embedding_server.py');
-      } else {
-        toast.error(error.message);
-      }
-    } else {
-      toast.error('Search failed. Make sure the server is running.');
-    }
-    
-    setResults([]);
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
-  const exampleQueries = [
-    'artificial intelligence',
-    'machine learning algorithms',
-    'productivity tips',
-    'web development',
-    'startup advice',
-    'climate change',
-  ];
+  const handleSearch = async () => {
+    if (!query.trim()) return;
+
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({
+        q: query,
+        dateRange: filters.dateRange,
+        collections: filters.collections.join(','),
+        fileTypes: filters.fileTypes.join(','),
+        sortBy: filters.sortBy,
+        sortOrder: filters.sortOrder,
+      });
+
+      const response = await fetch(`http://localhost:3001/api/search?${params}`);
+      const data = await response.json();
+      setResults(data.results || []);
+      setSearchTime(data.searchTime || 0);
+      setHasSearched(true);
+    } catch (error) {
+      console.error('Search failed:', error);
+      toast.error('Search failed');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <MainLayout
-      title="Semantic Search"
-      description="Find content by meaning, not just keywords"
+      title="Search"
+      description="Find anything in your knowledge base"
     >
-      <div className="max-w-5xl mx-auto">
-        {/* Search Hero */}
-        <div className="mb-8">
-          <form onSubmit={handleSearch} className="relative">
-            <div className="relative">
-              <MagnifyingGlassIcon className="w-6 h-6 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+      <div className="w-full max-w-4xl mx-auto">
+        {/* Search Bar */}
+        <div className="card p-6 mb-6">
+          <div className="flex gap-3">
+            <div className="flex-1 relative">
+              <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
               <input
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search your knowledge base by meaning..."
-                className="w-full pl-14 pr-40 py-4 text-lg border-2 border-gray-200 rounded-xl focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-50 transition"
-                disabled={loading}
+                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                placeholder="Search documents, notes, collections..."
+                className="input w-full pl-10"
+                autoFocus
               />
-              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                <select
-                  value={limit}
-                  onChange={(e) => setLimit(Number(e.target.value))}
-                  className="text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                >
-                  <option value={5}>5 results</option>
-                  <option value={10}>10 results</option>
-                  <option value={20}>20 results</option>
-                  <option value={50}>50 results</option>
-                </select>
-                <button
-                  type="submit"
-                  disabled={loading || !query.trim()}
-                  className="btn-primary"
-                >
-                  {loading ? (
-                    <>
-                      <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      Searching...
-                    </>
-                  ) : (
-                    <>
-                      <SparklesIcon className="w-5 h-5" />
-                      Search
-                    </>
-                  )}
-                </button>
-              </div>
             </div>
-          </form>
+            <AdvancedFilters
+              filters={filters}
+              onFiltersChange={setFilters}
+              collections={collections}
+            />
+            <button onClick={handleSearch} className="btn-primary">
+              Search
+            </button>
+          </div>
 
-          {/* Example Queries */}
-          {!hasSearched && (
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <span className="text-sm text-gray-500">Try:</span>
-              {exampleQueries.map((example) => (
-                <button
-                  key={example}
-                  onClick={() => setQuery(example)}
-                  className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-full transition-colors"
-                >
-                  {example}
-                </button>
+          {/* Active Filters Display */}
+          {(filters.dateRange !== 'all' || filters.collections.length > 0 || filters.fileTypes.length > 0) && (
+            <div className="flex flex-wrap gap-2 mt-4">
+              {filters.dateRange !== 'all' && (
+                <span className="px-3 py-1 bg-brand-100 text-brand-700 rounded-full text-sm font-medium">
+                  📅 {filters.dateRange}
+                </span>
+              )}
+              {filters.collections.map(id => {
+                const collection = collections.find(c => c.id === id);
+                return collection ? (
+                  <span key={id} className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-medium">
+                    📁 {collection.name}
+                  </span>
+                ) : null;
+              })}
+              {filters.fileTypes.map(type => (
+                <span key={type} className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium">
+                  📄 {type}
+                </span>
               ))}
             </div>
           )}

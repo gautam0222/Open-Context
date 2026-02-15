@@ -330,26 +330,21 @@ export default function DashboardPage() {
             ) : (
               <div className="space-y-3">
                 {recentDocs.map((doc) => (
-                  <Link
-                    key={doc.id}
-                    href={`/library/${doc.id}`}
-                    className="block p-4 bg-gray-50 hover:bg-gray-100 rounded-lg transition group"
-                  >
-                    <div className="flex items-start gap-3">
-                      <DocumentTextIcon className="w-5 h-5 text-gray-400 mt-0.5 flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-medium text-gray-900 group-hover:text-brand-600 line-clamp-1 mb-1">
-                          {doc.title}
-                        </h3>
-                        <div className="flex items-center gap-3 text-xs text-gray-500">
-                          <span>{doc.word_count.toLocaleString()} words</span>
-                          <span>•</span>
-                          <span>{formatDate(doc.created_at)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </Link>
-                ))}
+  <Link
+    key={doc.id}
+    href={`/library/${doc.id}`}
+    className="block p-4 bg-white rounded-lg border border-gray-200 hover:border-brand-500 hover:shadow-md transition"
+  >
+    <h3 className="font-medium text-gray-900 mb-2 line-clamp-2">
+      {doc.title || 'Untitled'}
+    </h3>
+    <div className="flex items-center gap-3 text-xs text-gray-500">
+      <span>{(doc.word_count || 0).toLocaleString()} words</span>
+      <span>•</span>
+      <span>{formatDate(doc.created_at)}</span>
+    </div>
+  </Link>
+))}
               </div>
             )}
           </div>

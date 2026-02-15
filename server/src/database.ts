@@ -37,10 +37,29 @@ async function initDatabase() {
 
 // Create tables
 function initializeTables() {
+
+  try {
+  const result = db.exec("SELECT user_id FROM user_profiles WHERE user_id = 'user_default'");
+  
+  if (result.length === 0 || result[0].values.length === 0) {
+    db.exec(`
+      INSERT INTO user_profiles (
+        user_id, username, display_name, level, xp, created_at
+      )
+      VALUES ('user_default', 'you', 'You', 1, 0, ?)
+    `, [Date.now()]);
+    
+    console.log('✅ Created default user profile');
+  }
+} catch (error) {
+  console.error('Failed to create default user:', error);
+}
+
   // Documents table
   db.run(`
     CREATE TABLE IF NOT EXISTS documents (
       id TEXT PRIMARY KEY,
+      user_id TEXT DEFAULT 'user_default',
       url TEXT NOT NULL,
       title TEXT,
       content TEXT,
@@ -53,6 +72,13 @@ function initializeTables() {
       updated_at INTEGER
     )
   `);
+  // Try to add user_id column if it doesn't exist
+try {
+  db.exec('ALTER TABLE documents ADD COLUMN user_id TEXT DEFAULT "user_default"');
+  console.log('✅ Added user_id column to existing database');
+} catch (error) {
+  // Column already exists, ignore
+}
 
   // Chunks table WITH EMBEDDING COLUMN
   db.run(`
@@ -196,23 +222,33 @@ db.exec(`
     username TEXT UNIQUE NOT NULL,
     display_name TEXT NOT NULL,
     avatar TEXT,
+    cover_image TEXT,
     bio TEXT,
     level INTEGER DEFAULT 1,
     xp INTEGER DEFAULT 0,
     coins INTEGER DEFAULT 0,
     streak_days INTEGER DEFAULT 0,
-    last_active DATE,
+    last_active INTEGER,
     total_documents INTEGER DEFAULT 0,
     total_words_read INTEGER DEFAULT 0,
     achievements TEXT,
     preferences TEXT,
-    is_public BOOLEAN DEFAULT 1,
-    created_at INTEGER NOT NULL
+    is_public INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER
   );
 
   CREATE INDEX IF NOT EXISTS idx_user_profiles_username ON user_profiles(username);
   CREATE INDEX IF NOT EXISTS idx_user_profiles_level ON user_profiles(level);
 `);
+
+// Try to add cover_image column if it doesn't exist (for existing databases)
+try {
+  db.exec('ALTER TABLE user_profiles ADD COLUMN cover_image TEXT');
+  console.log('✅ Added cover_image column to existing database');
+} catch (error) {
+  // Column already exists or table just created, ignore
+}
 
 // Achievements/Badges
 db.exec(`
@@ -250,6 +286,25 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_user_achievements_user ON user_achievements(user_id);
   CREATE INDEX IF NOT EXISTS idx_user_achievements_unlocked ON user_achievements(unlocked_at);
+`);
+// Workspace invitations
+db.exec(`
+  CREATE TABLE IF NOT EXISTS workspace_invitations (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL,
+    invited_by TEXT NOT NULL,
+    invite_token TEXT UNIQUE NOT NULL,
+    status TEXT DEFAULT 'pending',
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    accepted_at INTEGER,
+    FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_invitations_token ON workspace_invitations(invite_token);
+  CREATE INDEX IF NOT EXISTS idx_invitations_email ON workspace_invitations(email);
 `);
 
 // Learning Goals
@@ -602,6 +657,7 @@ db.exec(`
 db.exec(`
   CREATE TABLE IF NOT EXISTS collections (
     id TEXT PRIMARY KEY,
+    user_id TEXT DEFAULT 'user_default',
     name TEXT NOT NULL,
     description TEXT,
     color TEXT DEFAULT '#6366f1',
@@ -618,6 +674,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_collections_parent ON collections(parent_id);
   CREATE INDEX IF NOT EXISTS idx_collections_position ON collections(position);
 `);
+try {
+  db.exec('ALTER TABLE collections ADD COLUMN user_id TEXT DEFAULT "user_default"');
+  console.log('✅ Added user_id to collections');
+} catch (error) {
+  // Already exists
+}
 
 // Document-Collection relationships (many-to-many)
 db.exec(`
@@ -660,6 +722,8 @@ db.run(`CREATE INDEX IF NOT EXISTS idx_notes_document ON notes(document_id)`);
 
   console.log('✅ Database tables initialized');
 }
+// Create default user profile if doesn't exist
+
 
 
 
@@ -706,6 +770,7 @@ export interface DocumentRow {
   site_name: string | null;
   favicon: string | null;
   word_count: number | null;
+  user_id: string | null;
   created_at: number;
   updated_at: number | null;
 }
@@ -720,6 +785,7 @@ export interface InsertDocumentData {
   site_name?: string;
   favicon?: string;
   word_count?: number;
+  user_id?: string; // Add user_id to the interface
 }
 
 /**
@@ -729,8 +795,8 @@ export function insertDocument(data: InsertDocumentData): void {
   db.run(
     `
     INSERT INTO documents (
-      id, url, title, content, excerpt, author, site_name, favicon, word_count, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, url, title, content, excerpt, author, site_name, favicon, word_count, user_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     [
       data.id,
@@ -742,6 +808,7 @@ export function insertDocument(data: InsertDocumentData): void {
       data.site_name || null,
       data.favicon || null,
       data.word_count || null,
+      data.user_id || 'user_default', // ADD THIS
       Date.now(),
     ]
   );
@@ -853,18 +920,20 @@ export interface UserProfile {
   username: string;
   display_name: string;
   avatar: string | null;
+  cover_image: string | null;
   bio: string | null;
   level: number;
   xp: number;
   coins: number;
   streak_days: number;
-  last_active: string | null;
+  last_active: number | null;
   total_documents: number;
   total_words_read: number;
   achievements: string | null;
   preferences: string | null;
   is_public: number;
   created_at: number;
+  updated_at: number | null;
 }
 
 export interface Achievement {
@@ -1545,11 +1614,19 @@ export function getDocumentByUrl(url: string): DocumentRow | null {
 /**
  * Get all documents (with pagination)
  */
-export function getAllDocuments(limit = 100, offset = 0): DocumentRow[] {
-  const result = db.exec(
-    'SELECT * FROM documents ORDER BY created_at DESC LIMIT ? OFFSET ?',
-    [limit, offset]
-  );
+export function getAllDocuments(limit = 100, offset = 0, userId?: string): DocumentRow[] {
+  let query = 'SELECT * FROM documents';
+  const params: any[] = [];
+  
+  if (userId && userId !== 'user_default') {
+    query += ' WHERE user_id = ?';
+    params.push(userId);
+  }
+  
+  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+  params.push(limit, offset);
+  
+  const result = db.exec(query, params);
 
   if (result.length === 0) return [];
 
@@ -1665,6 +1742,7 @@ function rowToDocument(
       row.word_count !== null && row.word_count !== undefined
         ? Number(row.word_count)
         : null,
+    user_id: row.user_id ?? null, // ✅ ADD THIS
     created_at: Number(row.created_at),
     updated_at:
       row.updated_at !== null && row.updated_at !== undefined

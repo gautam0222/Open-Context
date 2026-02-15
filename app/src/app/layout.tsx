@@ -1,16 +1,13 @@
-import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
+import { ClerkProvider } from '@clerk/nextjs';
 import './globals.css';
-import ClientProvider from '@/components/ClientProvider';
+import { Toaster } from 'react-hot-toast';
 
-const inter = Inter({ subsets: ['latin'] });
-
-export const metadata: Metadata = {
-  title: 'Open Context - Your AI Knowledge Base',
-  description: 'AI-powered knowledge management and learning platform',
-  manifest: '/manifest.json',
-  themeColor: '#6366f1',
-  viewport: 'width=device-width, initial-scale=1, maximum-scale=1',
+export const metadata = {
+  title: 'Open Context - AI-Powered Knowledge Management',
+  description: 'Capture, organize, and explore your knowledge with AI',
+  icons: {
+    icon: '/favicon.ico',
+  },
 };
 
 export default function RootLayout({
@@ -19,21 +16,31 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <head>
-        <meta name="application-name" content="Open Context" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="Open Context" />
-        <meta name="format-detection" content="telephone=no" />
-        <meta name="mobile-web-app-capable" content="yes" />
-        <meta name="theme-color" content="#6366f1" />
-        <link rel="manifest" href="/manifest.json" />
-        <link rel="apple-touch-icon" href="/icon-192.png" />
-      </head>
-      <body className={`${inter.className} m-0 p-0 overflow-x-hidden`}>
-        <ClientProvider>{children}</ClientProvider>
-      </body>
-    </html>
+    <ClerkProvider
+      appearance={{
+        variables: {
+          colorPrimary: '#6366f1',
+          colorBackground: '#ffffff',
+          colorText: '#111827',
+        },
+      }}
+    >
+      <html lang="en">
+        <body className="antialiased">
+          {children}
+          <Toaster 
+            position="top-right"
+            toastOptions={{
+              duration: 3000,
+              style: {
+                background: '#fff',
+                color: '#111827',
+                boxShadow: '0 10px 25px rgba(0,0,0,0.1)',
+              },
+            }}
+          />
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }

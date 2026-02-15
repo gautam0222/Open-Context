@@ -2,6 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useUser, useClerk } from '@clerk/nextjs';
+import { ArrowRightOnRectangleIcon } from '@heroicons/react/24/outline';
 import {
   HomeIcon,
   MagnifyingGlassIcon,
@@ -10,7 +12,6 @@ import {
   CloudArrowUpIcon,
   ShareIcon,
   ChatBubbleBottomCenterTextIcon,
-  ChatBubbleLeftIcon,
   ChartBarIcon,
   Cog6ToothIcon,
   SparklesIcon,
@@ -23,20 +24,69 @@ import {
 } from '@heroicons/react/24/outline';
 import { useState, useEffect } from 'react';
 
+function UserProfileSection() {
+  const { user, isLoaded } = useUser();
+  const { signOut, openUserProfile } = useClerk();
+
+  if (!isLoaded) {
+    return (
+      <div className="flex items-center justify-center py-4">
+        <div className="w-8 h-8 border-2 border-brand-200 border-t-brand-600 rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  return (
+    <>
+      {/* User Info */}
+      <button
+        onClick={() => openUserProfile()}
+        className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 transition mb-2"
+      >
+        <div className="w-10 h-10 bg-gradient-to-br from-brand-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0">
+          {user.imageUrl ? (
+            <img
+              src={user.imageUrl}
+              alt={user.fullName || 'User'}
+              className="w-full h-full rounded-full object-cover"
+            />
+          ) : (
+            user.firstName?.charAt(0) || 'U'
+          )}
+        </div>
+        <div className="flex-1 text-left overflow-hidden">
+          <p className="text-sm font-semibold text-gray-900 truncate">
+            {user.fullName || user.firstName || 'User'}
+          </p>
+          <p className="text-xs text-gray-500 truncate">
+            Level 1 • 0 XP
+          </p>
+        </div>
+      </button>
+
+      {/* Sign Out Button */}
+      <button
+        onClick={() => signOut()}
+        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-red-600 hover:bg-red-50 transition"
+      >
+        <ArrowRightOnRectangleIcon className="w-5 h-5" />
+        <span>Sign Out</span>
+      </button>
+    </>
+  );
+}
+
 export default function Sidebar() {
   const pathname = usePathname();
   const [unreadCount, setUnreadCount] = useState(0);
-  const [unreadMessages, setUnreadMessages] = useState(0);
 
   useEffect(() => {
     loadUnreadCount();
-    loadUnreadMessages();
-    
-    const interval = setInterval(() => {
-      loadUnreadCount();
-      loadUnreadMessages();
-    }, 60000); // Check every minute
-    
+    const interval = setInterval(loadUnreadCount, 60000); // Check every minute
     return () => clearInterval(interval);
   }, []);
 
@@ -48,16 +98,6 @@ export default function Sidebar() {
       setUnreadCount(unread);
     } catch (error) {
       console.error('Failed to load notification count:', error);
-    }
-  };
-
-  const loadUnreadMessages = async () => {
-    try {
-      const response = await fetch('http://localhost:3001/api/messages/unread-count');
-      const data = await response.json();
-      setUnreadMessages(data.count || 0);
-    } catch (error) {
-      console.error('Failed to load message count:', error);
     }
   };
 
@@ -114,20 +154,6 @@ export default function Sidebar() {
       icon: TrophyIcon,
       section: 'social'
     },
-    { 
-    name: 'Daily Digest', 
-    href: '/digest', 
-    icon: SparklesIcon,
-    badge: 'New',
-    section: 'social'
-  },
-  { 
-    name: 'Challenges', 
-    href: '/challenges', 
-    icon: FireIcon,
-    badge: 'New',
-    section: 'progress'
-  },
 
     // AI & Analytics
     { 
@@ -170,13 +196,6 @@ export default function Sidebar() {
       name: 'Profile', 
       href: '/profile', 
       icon: UserCircleIcon,
-      section: 'user'
-    },
-    { 
-      name: 'Messages', 
-      href: '/messages', 
-      icon: ChatBubbleLeftIcon,
-      count: unreadMessages,
       section: 'user'
     },
     { 
@@ -274,20 +293,8 @@ export default function Sidebar() {
 
       {/* User Preview */}
       <div className="p-4 border-t border-gray-200">
-        <Link
-          href="/profile"
-          className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 transition"
-        >
-          <div className="w-10 h-10 bg-gradient-to-br from-brand-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold">
-            A
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium text-gray-900 truncate">Anonymous User</div>
-            <div className="text-xs text-gray-500">Level 1 • 0 XP</div>
-          </div>
-          <SparklesIcon className="w-5 h-5 text-gray-400" />
-        </Link>
-      </div>
+  <UserProfileSection />
+</div>
     </aside>
   );
 }

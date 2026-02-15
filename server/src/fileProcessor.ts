@@ -1,4 +1,4 @@
-import * as pdfParse from 'pdf-parse';
+import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import { createWorker } from 'tesseract.js';
 

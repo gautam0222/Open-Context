@@ -9,9 +9,11 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@clerk/nextjs": "^6.37.4",
     "@heroicons/react": "^2.2.0",
     "@open-context/shared": "*",
     "d3": "^7.9.0",
+    "jszip": "^3.10.1",
     "next": "^14.2.35",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -19,6 +21,7 @@
     "react-force-graph-3d": "^1.29.1",
     "react-hot-toast": "^2.6.0",
     "reactflow": "^11.11.4",
+    "resend": "^6.9.2",
     "three": "^0.182.0"
   },
   "devDependencies": {
