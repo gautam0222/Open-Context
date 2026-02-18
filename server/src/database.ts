@@ -1,4 +1,4 @@
-import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import Database from 'better-sqlite3';
 import { generateId } from '@open-context/shared';
 import path from 'path';
 import fs from 'fs';
@@ -13,20 +13,17 @@ if (!fs.existsSync(DATA_DIR)) {
   console.log('📁 Created data directory');
 }
 
-let db: SqlJsDatabase;
+let db: Database.Database;
 let isInitialized = false;
 
 // Initialize database
-async function initDatabase() {
-  const SQL = await initSqlJs();
-
-  // Load existing database or create new one
+function initDatabase() {
+  // Create database connection
+  db = new Database(DB_PATH);
+  
   if (fs.existsSync(DB_PATH)) {
-    const buffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(buffer);
     console.log('📊 Loaded existing database');
   } else {
-    db = new SQL.Database();
     console.log('📊 Created new database');
   }
 
@@ -38,16 +35,43 @@ async function initDatabase() {
 // Create tables
 function initializeTables() {
 
+  // User profiles table
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    avatar TEXT,
+    cover_image TEXT,
+    bio TEXT,
+    level INTEGER DEFAULT 1,
+    xp INTEGER DEFAULT 0,
+    coins INTEGER DEFAULT 0,
+    streak_days INTEGER DEFAULT 0,
+    last_active INTEGER,
+    total_documents INTEGER DEFAULT 0,
+    total_words_read INTEGER DEFAULT 0,
+    achievements TEXT,
+    preferences TEXT,
+    is_public INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_profiles_username ON user_profiles(username);
+  CREATE INDEX IF NOT EXISTS idx_user_profiles_level ON user_profiles(level);
+`);
+
   try {
-  const result = db.exec("SELECT user_id FROM user_profiles WHERE user_id = 'user_default'");
-  
-  if (result.length === 0 || result[0].values.length === 0) {
-    db.exec(`
+  const result = db.prepare('SELECT 1 FROM user_profiles WHERE user_id = ?').get('user_default');
+
+  if (!result) {
+    db.prepare(`
       INSERT INTO user_profiles (
         user_id, username, display_name, level, xp, created_at
       )
       VALUES ('user_default', 'you', 'You', 1, 0, ?)
-    `, [Date.now()]);
+    `).run(Date.now());
     
     console.log('✅ Created default user profile');
   }
@@ -56,7 +80,7 @@ function initializeTables() {
 }
 
   // Documents table
-  db.run(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS documents (
       id TEXT PRIMARY KEY,
       user_id TEXT DEFAULT 'user_default',
@@ -73,15 +97,16 @@ function initializeTables() {
     )
   `);
   // Try to add user_id column if it doesn't exist
+// Try to add user_id column if it doesn't exist
 try {
-  db.exec('ALTER TABLE documents ADD COLUMN user_id TEXT DEFAULT "user_default"');
+  db.prepare('ALTER TABLE documents ADD COLUMN user_id TEXT DEFAULT "user_default"').run();
   console.log('✅ Added user_id column to existing database');
 } catch (error) {
   // Column already exists, ignore
 }
 
   // Chunks table WITH EMBEDDING COLUMN
-  db.run(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS chunks (
       id TEXT PRIMARY KEY,
       document_id TEXT NOT NULL,
@@ -94,7 +119,7 @@ try {
     )
   `);
 
-  db.run(`
+  db.exec(`
   CREATE TABLE IF NOT EXISTS highlights (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
@@ -107,7 +132,7 @@ try {
   )
 `);
 
-db.run(`
+db.exec(`
   CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
@@ -121,7 +146,7 @@ db.run(`
 `);
 
 // Entities table (concepts extracted from documents)
-db.run(`
+db.exec(`
   CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -132,7 +157,7 @@ db.run(`
 `);
 
 // Document-Entity relationships
-db.run(`
+db.exec(`
   CREATE TABLE IF NOT EXISTS document_entities (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
@@ -147,7 +172,7 @@ db.run(`
 `);
 
 // Entity relationships (concept A relates to concept B)
-db.run(`
+db.exec(`
   CREATE TABLE IF NOT EXISTS entity_relationships (
     id TEXT PRIMARY KEY,
     entity_a_id TEXT NOT NULL,
@@ -216,35 +241,10 @@ db.exec(`
 `);
 
 // User profiles (extended)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS user_profiles (
-    user_id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    display_name TEXT NOT NULL,
-    avatar TEXT,
-    cover_image TEXT,
-    bio TEXT,
-    level INTEGER DEFAULT 1,
-    xp INTEGER DEFAULT 0,
-    coins INTEGER DEFAULT 0,
-    streak_days INTEGER DEFAULT 0,
-    last_active INTEGER,
-    total_documents INTEGER DEFAULT 0,
-    total_words_read INTEGER DEFAULT 0,
-    achievements TEXT,
-    preferences TEXT,
-    is_public INTEGER DEFAULT 1,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_user_profiles_username ON user_profiles(username);
-  CREATE INDEX IF NOT EXISTS idx_user_profiles_level ON user_profiles(level);
-`);
 
 // Try to add cover_image column if it doesn't exist (for existing databases)
 try {
-  db.exec('ALTER TABLE user_profiles ADD COLUMN cover_image TEXT');
+  db.prepare('ALTER TABLE user_profiles ADD COLUMN cover_image TEXT').run();
   console.log('✅ Added cover_image column to existing database');
 } catch (error) {
   // Column already exists or table just created, ignore
@@ -675,7 +675,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_collections_position ON collections(position);
 `);
 try {
-  db.exec('ALTER TABLE collections ADD COLUMN user_id TEXT DEFAULT "user_default"');
+  db.prepare('ALTER TABLE collections ADD COLUMN user_id TEXT DEFAULT "user_default"').run();
   console.log('✅ Added user_id to collections');
 } catch (error) {
   // Already exists
@@ -699,63 +699,57 @@ db.exec(`
 `);
 
 // Indexes for graph queries
-db.run(`CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_doc_entities_doc ON document_entities(document_id)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_doc_entities_entity ON document_entities(entity_id)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_entity_rels_a ON entity_relationships(entity_a_id)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_entity_rels_b ON entity_relationships(entity_b_id)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_highlights_document ON highlights(document_id)`);
-db.run(`CREATE INDEX IF NOT EXISTS idx_notes_document ON notes(document_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_doc_entities_doc ON document_entities(document_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_doc_entities_entity ON document_entities(entity_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_entity_rels_a ON entity_relationships(entity_a_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_entity_rels_b ON entity_relationships(entity_b_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_highlights_document ON highlights(document_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_notes_document ON notes(document_id)`);
 
   // Create indexes for documents
-  db.run(`CREATE INDEX IF NOT EXISTS idx_url ON documents(url)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_created_at ON documents(created_at DESC)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_title ON documents(title)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_url ON documents(url)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_created_at ON documents(created_at DESC)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_title ON documents(title)`);
 
   // Create indexes for chunks
-  db.run(`CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_chunks_index ON chunks(document_id, chunk_index)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_index ON chunks(document_id, chunk_index)`);
 
   // Save to disk
   saveDatabase();
 
   console.log('✅ Database tables initialized');
 }
-// Create default user profile if doesn't exist
-
-
-
 
 // Near the top of database.ts, after db is created:
-export { db };
+export function getDb(): Database.Database {
+  if (!isInitialized) {
+    initDatabase();
+  }
+  return db;
+}
 
 // Save database to disk
 function saveDatabase() {
-  if (!isInitialized) return;
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
+  // Not required for better-sqlite3 (synchronous engine)
 }
 
-// Call init and wait for it
-initDatabase().catch((error) => {
+try {
+  initDatabase();
+} catch (error) {
   console.error('Failed to initialize database:', error);
   process.exit(1);
-});
+}
 
 // Helper to ensure DB is ready
 export function ensureDbReady(): Promise<void> {
-  return new Promise((resolve) => {
-    const checkReady = () => {
-      if (isInitialized) {
-        resolve();
-      } else {
-        setTimeout(checkReady, 100);
-      }
-    };
-    checkReady();
-  });
+  // With better-sqlite3, initialization is synchronous
+  if (!isInitialized) {
+    initDatabase();
+  }
+  return Promise.resolve();
 }
 
 // ==================== DOCUMENT OPERATIONS ====================
@@ -792,27 +786,26 @@ export interface InsertDocumentData {
  * Insert a new document
  */
 export function insertDocument(data: InsertDocumentData): void {
-  db.run(
-    `
+  const stmt = db.prepare(`
     INSERT INTO documents (
       id, url, title, content, excerpt, author, site_name, favicon, word_count, user_id, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-    [
-      data.id,
-      data.url,
-      data.title || null,
-      data.content || null,
-      data.excerpt || null,
-      data.author || null,
-      data.site_name || null,
-      data.favicon || null,
-      data.word_count || null,
-      data.user_id || 'user_default', // ADD THIS
-      Date.now(),
-    ]
+  `);
+  
+  stmt.run(
+    data.id,
+    data.url,
+    data.title || null,
+    data.content || null,
+    data.excerpt || null,
+    data.author || null,
+    data.site_name || null,
+    data.favicon || null,
+    data.word_count || null,
+    data.user_id || 'user_default',
+    Date.now()
   );
-
+  
   saveDatabase();
 }
 
@@ -850,9 +843,6 @@ export interface ActivityItem {
   created_at: number;
 }
 
-/**
- * Create workspace
- */
 export function createWorkspace(workspace: Omit<Workspace, 'updated_at'>): void {
   const stmt = db.prepare(`
     INSERT INTO workspaces (
@@ -860,7 +850,7 @@ export function createWorkspace(workspace: Omit<Workspace, 'updated_at'>): void 
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run([
+  stmt.run(
     workspace.id,
     workspace.name,
     workspace.description,
@@ -870,49 +860,34 @@ export function createWorkspace(workspace: Omit<Workspace, 'updated_at'>): void 
     workspace.is_public,
     workspace.member_limit,
     workspace.created_at,
-  ]);
+  );
 }
 
-/**
- * Get all workspaces for user
- */
 export function getUserWorkspaces(userId: string): Workspace[] {
-  const result = db.exec(`
-    SELECT DISTINCT w.* FROM workspaces w
-    LEFT JOIN workspace_members wm ON w.id = wm.workspace_id
-    WHERE w.owner_id = ? OR wm.user_id = ?
-    ORDER BY w.created_at DESC
-  `, [userId, userId]);
-  
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as Workspace;
-  });
+  return db
+    .prepare(`
+      SELECT DISTINCT w.* FROM workspaces w
+      LEFT JOIN workspace_members wm ON w.id = wm.workspace_id
+      WHERE w.owner_id = ? OR wm.user_id = ?
+      ORDER BY w.created_at DESC
+    `)
+    .all(userId, userId) as Workspace[];
 }
 
-/**
- * Add member to workspace
- */
 export function addWorkspaceMember(member: WorkspaceMember): void {
   const stmt = db.prepare(`
     INSERT INTO workspace_members (id, workspace_id, user_id, role, permissions, joined_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run([
+  stmt.run(
     member.id,
     member.workspace_id,
     member.user_id,
     member.role,
     member.permissions,
     member.joined_at,
-  ]);
+  );
 }
 
 export interface UserProfile {
@@ -973,9 +948,6 @@ export interface LearningGoal {
   completed_at: number | null;
 }
 
-/**
- * Create or update user profile
- */
 export function upsertUserProfile(profile: UserProfile): void {
   const stmt = db.prepare(`
     INSERT INTO user_profiles (
@@ -1000,7 +972,7 @@ export function upsertUserProfile(profile: UserProfile): void {
       is_public = excluded.is_public
   `);
 
-  stmt.run([
+  stmt.run(
     profile.user_id,
     profile.username,
     profile.display_name,
@@ -1017,29 +989,26 @@ export function upsertUserProfile(profile: UserProfile): void {
     profile.preferences,
     profile.is_public,
     profile.created_at,
-  ]);
+  );
 }
 
-/**
- * Get user profile
- */
 export function getUserProfile(userId: string): UserProfile | null {
-  const result = db.exec('SELECT * FROM user_profiles WHERE user_id = ?', [userId]);
-  
-  if (result.length === 0 || result[0].values.length === 0) return null;
+  const result = db
+  .prepare('SELECT * FROM user_profiles WHERE user_id = ?')
+  .get(userId);
 
-  const columns = result[0].columns;
-  const row = result[0].values[0];
+  
+  if (!result) return null;
+
+  const columns = Object.keys(result);
+  const row = Object.values(result);
   const obj: any = {};
-  columns.forEach((col, idx) => {
+  columns.forEach((col: string, idx: number) => {
     obj[col] = row[idx];
   });
   return obj as UserProfile;
 }
 
-/**
- * Add XP to user
- */
 export function addUserXP(userId: string, xp: number): void {
   const profile = getUserProfile(userId);
   if (!profile) return;
@@ -1047,10 +1016,9 @@ export function addUserXP(userId: string, xp: number): void {
   const newXP = profile.xp + xp;
   const newLevel = Math.floor(Math.sqrt(newXP / 100)) + 1;
 
-  db.exec(
-    'UPDATE user_profiles SET xp = ?, level = ? WHERE user_id = ?',
-    [newXP, newLevel, userId]
-  );
+  db
+  .prepare('UPDATE user_profiles SET xp = ?, level = ? WHERE user_id = ?')
+  .run(newXP, newLevel, userId);
 
   // Check for level up achievement
   if (newLevel > profile.level) {
@@ -1078,7 +1046,7 @@ export function createLearningGoal(goal: LearningGoal): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run([
+  stmt.run(
     goal.id,
     goal.user_id,
     goal.workspace_id,
@@ -1097,21 +1065,21 @@ export function createLearningGoal(goal: LearningGoal): void {
     goal.resources,
     goal.created_at,
     goal.completed_at,
-  ]);
+  );
 }
 
 /**
  * Update goal progress
  */
 export function updateGoalProgress(goalId: string, newValue: number): void {
-  const result = db.exec('SELECT * FROM learning_goals WHERE id = ?', [goalId]);
+  const result = db.prepare('SELECT * FROM learning_goals WHERE id = ?').get(goalId);
   
-  if (result.length === 0 || result[0].values.length === 0) return;
+  if (!result) return;
 
-  const columns = result[0].columns;
-  const row = result[0].values[0];
+  const columns = Object.keys(result);
+  const row = Object.values(result);
   const goal: any = {};
-  columns.forEach((col, idx) => {
+  columns.forEach((col: string, idx: number) => {
     goal[col] = row[idx];
   });
 
@@ -1119,10 +1087,10 @@ export function updateGoalProgress(goalId: string, newValue: number): void {
 
   if (isCompleted && goal.status !== 'completed') {
     // Complete the goal
-    db.exec(
-      'UPDATE learning_goals SET current_value = ?, status = ?, completed_at = ? WHERE id = ?',
-      [newValue, 'completed', Date.now(), goalId]
-    );
+    db
+  .prepare('UPDATE learning_goals SET current_value = ?, status = ?, completed_at = ? WHERE id = ?')
+  .run(newValue, 'completed', Date.now(), goalId);
+
 
     // Award XP
     addUserXP(goal.user_id, goal.xp_reward);
@@ -1137,41 +1105,29 @@ export function updateGoalProgress(goalId: string, newValue: number): void {
       priority: 'high',
     });
   } else {
-    db.exec('UPDATE learning_goals SET current_value = ? WHERE id = ?', [newValue, goalId]);
+    db
+  .prepare('UPDATE learning_goals SET current_value = ? WHERE id = ?')
+  .run(newValue, goalId);
   }
 }
 
-/**
- * Get user goals
- */
-export function getUserGoals(userId: string): LearningGoal[] {
-  const result = db.exec(`
-    SELECT * FROM learning_goals
-    WHERE user_id = ?
-    ORDER BY 
-      CASE status 
-        WHEN 'active' THEN 1 
-        WHEN 'completed' THEN 2 
-        ELSE 3 
-      END,
-      created_at DESC
-  `, [userId]);
-  
-  if (result.length === 0) return [];
 
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as LearningGoal;
-  });
+export function getUserGoals(userId: string): LearningGoal[] {
+  return db
+    .prepare(`
+      SELECT * FROM learning_goals
+      WHERE user_id = ?
+      ORDER BY 
+        CASE status 
+          WHEN 'active' THEN 1 
+          WHEN 'completed' THEN 2 
+          ELSE 3 
+        END,
+        created_at DESC
+    `)
+    .all(userId) as LearningGoal[];
 }
 
-/**
- * Create notification
- */
 interface CreateNotification {
   user_id: string;
   type: string;
@@ -1190,7 +1146,7 @@ export function createNotification(notif: CreateNotification): void {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
   `);
 
-  stmt.run([
+  stmt.run(
     id,
     notif.user_id,
     notif.type,
@@ -1200,12 +1156,9 @@ export function createNotification(notif: CreateNotification): void {
     notif.icon || null,
     notif.priority || 'normal',
     Date.now(),
-  ]);
+  );
 }
 
-/**
- * Seed achievements
- */
 export function seedAchievements(): void {
   const achievements = [
     {
@@ -1308,7 +1261,7 @@ export function seedAchievements(): void {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
       `);
 
-      stmt.run([
+      stmt.run(
         id,
         ach.key,
         ach.name,
@@ -1320,16 +1273,13 @@ export function seedAchievements(): void {
         ach.rarity,
         ach.requirements,
         Date.now(),
-      ]);
+      );
     } catch (error) {
       // Achievement already exists
     }
   });
 }
 
-/**
- * Share collection with workspace
- */
 export function shareCollectionWithWorkspace(
   collectionId: string,
   workspaceId: string,
@@ -1343,30 +1293,21 @@ export function shareCollectionWithWorkspace(
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run([id, collectionId, workspaceId, sharedBy, permissions, Date.now()]);
+  stmt.run(id, collectionId, workspaceId, sharedBy, permissions, Date.now());
 }
 
-/**
- * Get workspace activity feed
- */
-export function getWorkspaceActivity(workspaceId: string, limit: number = 50): ActivityItem[] {
-  const result = db.exec(`
-    SELECT * FROM activity_feed
-    WHERE workspace_id = ?
-    ORDER BY created_at DESC
-    LIMIT ?
-  `, [workspaceId, limit]);
-  
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as ActivityItem;
-  });
+export function getWorkspaceActivity(
+  workspaceId: string,
+  limit: number = 50
+): ActivityItem[] {
+  return db
+    .prepare(`
+      SELECT * FROM activity_feed
+      WHERE workspace_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `)
+    .all(workspaceId, limit) as ActivityItem[];
 }
 
 export interface Conversation {
@@ -1387,83 +1328,56 @@ export interface Message {
   created_at: number;
 }
 
-/**
- * Get or create conversation between two users
- */
 export function getOrCreateConversation(user1Id: string, user2Id: string): string {
-  // Always order IDs consistently to avoid duplicates
   const [p1, p2] = [user1Id, user2Id].sort();
-
-  // Try to find existing conversation
-  const result = db.exec(`
+  const result = db
+  .prepare(`
     SELECT id FROM conversations
     WHERE (participant1_id = ? AND participant2_id = ?)
        OR (participant1_id = ? AND participant2_id = ?)
-  `, [p1, p2, p2, p1]);
+  `)
+  .get(p1, p2, p2, p1) as { id: string } | undefined;
 
-  if (result.length > 0 && result[0].values.length > 0) {
-    return result[0].values[0][0] as string;
+  if (result) {
+    return result.id;
   }
-
-  // Create new conversation
   const id = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  
-  db.exec(`
+  db
+  .prepare(`
     INSERT INTO conversations (id, participant1_id, participant2_id, created_at)
     VALUES (?, ?, ?, ?)
-  `, [id, p1, p2, Date.now()]);
+  `)
+  .run(id, p1, p2, Date.now());
 
   return id;
 }
 
-/**
- * Get user conversations
- */
-export function getUserConversations(userId: string): any[] {
-  const result = db.exec(`
-    SELECT * FROM conversations
-    WHERE participant1_id = ? OR participant2_id = ?
-    ORDER BY last_message_at DESC NULLS LAST, created_at DESC
-  `, [userId, userId]);
-
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj;
-  });
+export function getUserConversations(userId: string): Conversation[] {
+  return db
+    .prepare(`
+      SELECT * FROM conversations
+      WHERE participant1_id = ? OR participant2_id = ?
+      ORDER BY last_message_at DESC NULLS LAST, created_at DESC
+    `)
+    .all(userId, userId) as Conversation[];
 }
 
-/**
- * Get messages in conversation
- */
-export function getConversationMessages(conversationId: string, limit: number = 50): Message[] {
-  const result = db.exec(`
-    SELECT * FROM messages
-    WHERE conversation_id = ?
-    ORDER BY created_at DESC
-    LIMIT ?
-  `, [conversationId, limit]);
+export function getConversationMessages(
+  conversationId: string,
+  limit: number = 50
+): Message[] {
+  const rows = db
+    .prepare(`
+      SELECT * FROM messages
+      WHERE conversation_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `)
+    .all(conversationId, limit) as Message[];
 
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as Message;
-  }).reverse(); // Reverse to show oldest first
+  return rows.reverse(); // oldest first
 }
 
-/**
- * Send message
- */
 export function sendMessage(
   conversationId: string,
   senderId: string,
@@ -1472,17 +1386,22 @@ export function sendMessage(
   const id = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const createdAt = Date.now();
 
-  db.exec(`
-    INSERT INTO messages (id, conversation_id, sender_id, content, is_read, created_at)
+  db
+  .prepare(`
+    INSERT INTO messages 
+    (id, conversation_id, sender_id, content, is_read, created_at)
     VALUES (?, ?, ?, ?, 0, ?)
-  `, [id, conversationId, senderId, content, createdAt]);
+  `)
+  .run(id, conversationId, senderId, content, createdAt);
 
-  // Update conversation last message
-  db.exec(`
+// Update conversation last message
+db
+  .prepare(`
     UPDATE conversations
     SET last_message_id = ?, last_message_at = ?
     WHERE id = ?
-  `, [id, createdAt, conversationId]);
+  `)
+  .run(id, createdAt, conversationId);
 
   return {
     id,
@@ -1494,34 +1413,30 @@ export function sendMessage(
   };
 }
 
-/**
- * Mark messages as read
- */
 export function markMessagesAsRead(conversationId: string, userId: string): void {
-  db.exec(`
+  db
+  .prepare(`
     UPDATE messages
     SET is_read = 1
     WHERE conversation_id = ? AND sender_id != ? AND is_read = 0
-  `, [conversationId, userId]);
+  `)
+  .run(conversationId, userId);
 }
 
-/**
- * Get unread message count
- */
 export function getUnreadCount(userId: string): number {
-  const result = db.exec(`
-    SELECT COUNT(*) as count FROM messages m
-    INNER JOIN conversations c ON m.conversation_id = c.id
-    WHERE (c.participant1_id = ? OR c.participant2_id = ?)
-      AND m.sender_id != ?
-      AND m.is_read = 0
-  `, [userId, userId, userId]);
+  const row = db
+    .prepare(`
+      SELECT COUNT(*) as count FROM messages m
+      INNER JOIN conversations c ON m.conversation_id = c.id
+      WHERE (c.participant1_id = ? OR c.participant2_id = ?)
+        AND m.sender_id != ?
+        AND m.is_read = 0
+    `)
+    .get(userId, userId, userId) as { count: number } | undefined;
 
-  return result.length > 0 ? (result[0].values[0][0] as number) : 0;
+  return row?.count ?? 0;
 }
-/**
- * Add activity to feed
- */
+
 export function addActivityToFeed(activity: Omit<ActivityItem, 'id'>): void {
   const id = generateId('activity');
   
@@ -1531,7 +1446,7 @@ export function addActivityToFeed(activity: Omit<ActivityItem, 'id'>): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run([
+  stmt.run(
     id,
     activity.user_id,
     activity.workspace_id,
@@ -1541,35 +1456,20 @@ export function addActivityToFeed(activity: Omit<ActivityItem, 'id'>): void {
     activity.metadata,
     activity.is_public,
     activity.created_at,
-  ]);
+  );
 }
 
-/**
- * Get public activity feed (discover page)
- */
 export function getPublicActivity(limit: number = 50): ActivityItem[] {
-  const result = db.exec(`
-    SELECT * FROM activity_feed
-    WHERE is_public = 1
-    ORDER BY created_at DESC
-    LIMIT ?
-  `, [limit]);
-  
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as ActivityItem;
-  });
+  return db
+    .prepare(`
+      SELECT * FROM activity_feed
+      WHERE is_public = 1
+      ORDER BY created_at DESC
+      LIMIT ?
+    `)
+    .all(limit) as ActivityItem[];
 }
 
-/**
- * Update an existing document
- */
 export function updateDocument(id: string, data: Partial<InsertDocumentData>): void {
   const fields: string[] = [];
   const values: (string | number | null)[] = [];
@@ -1577,114 +1477,105 @@ export function updateDocument(id: string, data: Partial<InsertDocumentData>): v
   Object.entries(data).forEach(([key, value]) => {
     if (key !== 'id') {
       fields.push(`${key} = ?`);
-      values.push(value || null);
+      values.push(value ?? null);
     }
   });
 
   values.push(Date.now(), id);
 
-  db.run(
-    `UPDATE documents SET ${fields.join(', ')}, updated_at = ? WHERE id = ?`,
-    values
-  );
+  db
+  .prepare(
+    `UPDATE documents SET ${fields.join(', ')}, updated_at = ? WHERE id = ?`
+  )
+  .run(...values);
 
   saveDatabase();
 }
 
-/**
- * Get document by ID
- */
 export function getDocumentById(id: string): DocumentRow | null {
-  const result = db.exec('SELECT * FROM documents WHERE id = ?', [id]);
-  if (result.length === 0 || result[0].values.length === 0) return null;
+  const row = db
+    .prepare('SELECT * FROM documents WHERE id = ?')
+    .get(id) as DocumentRow | undefined;
 
-  return rowToDocument(result[0].columns, result[0].values[0]);
+  return row ?? null;
 }
 
-/**
- * Get document by URL
- */
 export function getDocumentByUrl(url: string): DocumentRow | null {
-  const result = db.exec('SELECT * FROM documents WHERE url = ?', [url]);
-  if (result.length === 0 || result[0].values.length === 0) return null;
+  const row = db
+    .prepare('SELECT * FROM documents WHERE url = ?')
+    .get(url) as DocumentRow | undefined;
 
-  return rowToDocument(result[0].columns, result[0].values[0]);
+  return row ?? null;
 }
 
-/**
- * Get all documents (with pagination)
- */
-export function getAllDocuments(limit = 100, offset = 0, userId?: string): DocumentRow[] {
+export function getAllDocuments(
+  limit = 100,
+  offset = 0,
+  userId?: string
+): DocumentRow[] {
   let query = 'SELECT * FROM documents';
   const params: any[] = [];
-  
+
   if (userId && userId !== 'user_default') {
     query += ' WHERE user_id = ?';
     params.push(userId);
   }
-  
+
   query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
   params.push(limit, offset);
-  
-  const result = db.exec(query, params);
 
-  if (result.length === 0) return [];
+  const rows = db
+    .prepare(query)
+    .all(...params) as DocumentRow[];
 
-  return result[0].values.map((row) => rowToDocument(result[0].columns, row));
+  return rows;
 }
 
-/**
- * Get total document count
- */
 export function getDocumentCount(): number {
-  const result = db.exec('SELECT COUNT(*) as count FROM documents');
-  if (result.length === 0) return 0;
-  return Number(result[0].values[0][0]) || 0;
+  const row = db
+    .prepare('SELECT COUNT(*) as count FROM documents')
+    .get() as { count: number } | undefined;
+
+  return row?.count ?? 0;
 }
 
-/**
- * Delete document by ID
- */
 export function deleteDocument(id: string): void {
-  db.run('DELETE FROM documents WHERE id = ?', [id]);
+  db.prepare('DELETE FROM documents WHERE id = ?').run(id);
   saveDatabase();
 }
 
-/**
- * Search documents by title or content
- */
 export function searchDocuments(query: string, limit = 20): DocumentRow[] {
   const searchPattern = `%${query}%`;
-  const result = db.exec(
-    `SELECT * FROM documents 
-     WHERE title LIKE ? OR content LIKE ?
-     ORDER BY created_at DESC LIMIT ?`,
-    [searchPattern, searchPattern, limit]
-  );
 
-  if (result.length === 0) return [];
+  const rows = db
+    .prepare(`
+      SELECT * FROM documents 
+      WHERE title LIKE ? OR content LIKE ?
+      ORDER BY created_at DESC 
+      LIMIT ?
+    `)
+    .all(searchPattern, searchPattern, limit) as DocumentRow[];
 
-  return result[0].values.map((row) => rowToDocument(result[0].columns, row));
+  return rows;
 }
 
-/**
- * Get database statistics
- */
 export function getDatabaseStats() {
   const totalDocs = getDocumentCount();
 
   let totalWords = 0;
   let avgWords = 0;
 
-  const totalResult = db.exec('SELECT SUM(word_count) as total FROM documents');
-  if (totalResult.length > 0 && totalResult[0].values.length > 0) {
-    totalWords = Number(totalResult[0].values[0][0]) || 0;
-  }
+  const totalRow = db
+  .prepare('SELECT SUM(word_count) as total FROM documents')
+  .get() as { total: number | null } | undefined;
 
-  const avgResult = db.exec('SELECT AVG(word_count) as average FROM documents');
-  if (avgResult.length > 0 && avgResult[0].values.length > 0) {
-    avgWords = Math.round(Number(avgResult[0].values[0][0]) || 0);
-  }
+totalWords = totalRow?.total ?? 0;
+
+const avgRow = db
+  .prepare('SELECT AVG(word_count) as average FROM documents')
+  .get() as { average: number | null } | undefined;
+
+avgWords = avgRow?.average ? Math.round(avgRow.average) : 0;
 
   return {
     totalDocuments: totalDocs,
@@ -1693,72 +1584,26 @@ export function getDatabaseStats() {
   };
 }
 
-/**
- * Get documents by date range
- */
-export function getDocumentsByDateRange(startDate: number, endDate: number): DocumentRow[] {
-  const result = db.exec(`
-    SELECT * FROM documents
-    WHERE created_at >= ? AND created_at <= ?
-    ORDER BY created_at DESC
-  `, [startDate, endDate]);
+export function getDocumentsByDateRange(
+  startDate: number,
+  endDate: number
+): DocumentRow[] {
+  const rows = db
+    .prepare(`
+      SELECT * FROM documents
+      WHERE created_at >= ? AND created_at <= ?
+      ORDER BY created_at DESC
+    `)
+    .all(startDate, endDate) as DocumentRow[];
 
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as DocumentRow;
-  });
+  return rows;
 }
 
-/**
- * Helper: Convert SQL row to DocumentRow object
- */
-function rowToDocument(
-  columns: string[],
-  values: (string | number | null | Uint8Array)[]
-): DocumentRow {
-  const row: Record<string, any> = {};
-
-  columns.forEach((col, idx) => {
-    const value = values[idx];
-    row[col] = value instanceof Uint8Array ? null : value;
-  });
-
-  return {
-    id: row.id as string,
-    url: row.url as string,
-    title: row.title ?? null,
-    content: row.content ?? null,
-    excerpt: row.excerpt ?? null,
-    author: row.author ?? null,
-    site_name: row.site_name ?? null,
-    favicon: row.favicon ?? null,
-    word_count:
-      row.word_count !== null && row.word_count !== undefined
-        ? Number(row.word_count)
-        : null,
-    user_id: row.user_id ?? null, // ✅ ADD THIS
-    created_at: Number(row.created_at),
-    updated_at:
-      row.updated_at !== null && row.updated_at !== undefined
-        ? Number(row.updated_at)
-        : null,
-  };
-}
-
-
-/**
- * Close database (save final state)
- */
 export function closeDatabase(): void {
-  saveDatabase();
-  db.close();
-  console.log('📊 Database connection closed');
+  if (db) {
+    db.close();
+    console.log('📊 Database connection closed');
+  }
 }
 
 // ==================== CHUNK OPERATIONS ====================
@@ -1782,115 +1627,97 @@ export interface InsertChunkData {
   embedding?: number[]; // Array of numbers
 }
 
-/**
- * Insert a chunk
- */
 export function insertChunk(data: InsertChunkData): void {
-  db.run(
-    `
-    INSERT INTO chunks (
-      id, document_id, content, chunk_index, char_count, embedding, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-  `,
-    [
+  db
+    .prepare(`
+      INSERT INTO chunks (
+        id, document_id, content, chunk_index, char_count, embedding, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
       data.id,
       data.document_id,
       data.content,
       data.chunk_index,
-      data.char_count || null,
+      data.char_count ?? null,
       data.embedding ? JSON.stringify(data.embedding) : null,
-      Date.now(),
-    ]
-  );
+      Date.now()
+    );
 
   saveDatabase();
 }
 
+
 export function insertChunks(chunks: InsertChunkData[]): void {
-  chunks.forEach((chunk) => {
-    db.run(
-      `
-      INSERT INTO chunks (
-        id, document_id, content, chunk_index, char_count, embedding, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-      [
+  const stmt = db.prepare(`
+    INSERT INTO chunks (
+      id, document_id, content, chunk_index, char_count, embedding, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const insertMany = db.transaction((items: InsertChunkData[]) => {
+    for (const chunk of items) {
+      stmt.run(
         chunk.id,
         chunk.document_id,
         chunk.content,
         chunk.chunk_index,
-        chunk.char_count || null,
+        chunk.char_count ?? null,
         chunk.embedding ? JSON.stringify(chunk.embedding) : null,
-        Date.now(),
-      ]
-    );
+        Date.now()
+      );
+    }
   });
+
+  insertMany(chunks);
 
   saveDatabase();
 }
 
-/**
- * Get all chunks for a document
- */
 export function getChunksByDocumentId(documentId: string): ChunkRow[] {
-  const result = db.exec(
-    'SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index ASC',
-    [documentId]
-  );
+  const rows = db
+    .prepare(
+      'SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index ASC'
+    )
+    .all(documentId) as ChunkRow[];
 
-  if (result.length === 0) return [];
-
-  return result[0].values.map((row) => rowToChunk(result[0].columns, row));
+  return rows;
 }
 
-/**
- * Get chunk count for a document
- */
 export function getChunkCountByDocumentId(documentId: string): number {
-  const result = db.exec('SELECT COUNT(*) as count FROM chunks WHERE document_id = ?', [
-    documentId,
-  ]);
-  if (result.length === 0) return 0;
-  return Number(result[0].values[0][0]) || 0;
+  const row = db
+    .prepare('SELECT COUNT(*) as count FROM chunks WHERE document_id = ?')
+    .get(documentId) as { count: number } | undefined;
+
+  return row?.count ?? 0;
 }
 
-/**
- * Get total chunk count
- */
 export function getTotalChunkCount(): number {
-  const result = db.exec('SELECT COUNT(*) as count FROM chunks');
-  if (result.length === 0) return 0;
-  return Number(result[0].values[0][0]) || 0;
+  const row = db
+    .prepare('SELECT COUNT(*) as count FROM chunks')
+    .get() as { count: number } | undefined;
+
+  return row?.count ?? 0;
 }
 
-/**
- * Delete all chunks for a document
- */
 export function deleteChunksByDocumentId(documentId: string): void {
-  db.run('DELETE FROM chunks WHERE document_id = ?', [documentId]);
+  db
+    .prepare('DELETE FROM chunks WHERE document_id = ?')
+    .run(documentId);
+
   saveDatabase();
 }
 
-/**
- * Helper: Convert SQL row to ChunkRow object
- */
-function rowToChunk(
-  columns: string[],
-  values: (string | number | null | Uint8Array)[]
-): ChunkRow {
-  const chunk: Record<string, string | number | null> = {};
-  columns.forEach((col, idx) => {
-    const value = values[idx];
-    chunk[col] = value instanceof Uint8Array ? null : value;
-  });
-  return chunk as unknown as ChunkRow;
-}
+export function exec(sql: string, params: any[] = []) {
+  const stmt = db.prepare(sql);
 
-/**
- * Execute raw SQL (read-only use recommended)
- */
-export function exec(sql: string, params?: any[]) {
-  return db.exec(sql, params);
+  const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
+
+  if (isSelect) {
+    return stmt.all(...params);
+  }
+
+  return stmt.run(...params);
 }
 
 // ==================== HIGHLIGHTS OPERATIONS ====================
@@ -1951,9 +1778,6 @@ export interface CollectionDocument {
   position: number;
 }
 
-/**
- * Insert a new collection
- */
 export function insertCollection(collection: InsertCollection): void {
   const stmt = db.prepare(`
     INSERT INTO collections (
@@ -1962,7 +1786,7 @@ export function insertCollection(collection: InsertCollection): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run([
+  stmt.run(
     collection.id,
     collection.name,
     collection.description || null,
@@ -1973,71 +1797,41 @@ export function insertCollection(collection: InsertCollection): void {
     collection.is_smart || 0,
     collection.smart_rules || null,
     collection.created_at,
-  ]);
+  );
 }
 
-/**
- * Get all collections
- */
 export function getAllCollections(): Collection[] {
-  const result = db.exec('SELECT * FROM collections ORDER BY position ASC, created_at DESC');
-  
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as Collection;
-  });
+  return db
+    .prepare(
+      'SELECT * FROM collections ORDER BY position ASC, created_at DESC'
+    )
+    .all() as Collection[];
 }
 
-/**
- * Get collection by ID
- */
 export function getCollectionById(id: string): Collection | null {
-  const result = db.exec('SELECT * FROM collections WHERE id = ?', [id]);
-  
-  if (result.length === 0 || result[0].values.length === 0) return null;
+  const row = db
+    .prepare('SELECT * FROM collections WHERE id = ?')
+    .get(id) as Collection | undefined;
 
-  const columns = result[0].columns;
-  const row = result[0].values[0];
-  const obj: any = {};
-  columns.forEach((col, idx) => {
-    obj[col] = row[idx];
-  });
-  return obj as Collection;
+  return row ?? null;
 }
 
-/**
- * Get child collections (subcollections)
- */
 export function getChildCollections(parentId: string | null): Collection[] {
-  const query = parentId 
-    ? 'SELECT * FROM collections WHERE parent_id = ? ORDER BY position ASC'
-    : 'SELECT * FROM collections WHERE parent_id IS NULL ORDER BY position ASC';
-  
-  const result = parentId 
-    ? db.exec(query, [parentId])
-    : db.exec(query);
-  
-  if (result.length === 0) return [];
+  if (parentId) {
+    return db
+      .prepare(
+        'SELECT * FROM collections WHERE parent_id = ? ORDER BY position ASC'
+      )
+      .all(parentId) as Collection[];
+  }
 
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as Collection;
-  });
+  return db
+    .prepare(
+      'SELECT * FROM collections WHERE parent_id IS NULL ORDER BY position ASC'
+    )
+    .all() as Collection[];
 }
 
-/**
- * Update collection
- */
 export function updateCollection(id: string, updates: Partial<Collection>): void {
   const fields: string[] = [];
   const values: any[] = [];
@@ -2056,23 +1850,15 @@ export function updateCollection(id: string, updates: Partial<Collection>): void
   values.push(id);
 
   const stmt = db.prepare(`UPDATE collections SET ${fields.join(', ')} WHERE id = ?`);
-  stmt.run(values);
+  stmt.run(...values);
 }
 
-/**
- * Delete collection (and all subcollections)
- */
 export function deleteCollection(id: string): void {
-  db.exec('DELETE FROM collections WHERE id = ?', [id]);
+  db
+  .prepare('DELETE FROM collections WHERE id = ?')
+  .run(id);
 }
 
-/**
- * Add document to collection
- */
-
-/**
- * Generate unique ID with prefix
- */
 
 export function addDocumentToCollection(collectionId: string, documentId: string): void {
   const id = generateId('col_doc');
@@ -2082,135 +1868,107 @@ export function addDocumentToCollection(collectionId: string, documentId: string
     VALUES (?, ?, ?, ?, 0)
   `);
 
-  stmt.run([id, collectionId, documentId, Date.now()]);
+  stmt.run(id, collectionId, documentId, Date.now());
 }
 
-/**
- * Remove document from collection
- */
 export function removeDocumentFromCollection(collectionId: string, documentId: string): void {
-  db.exec(
-    'DELETE FROM collection_documents WHERE collection_id = ? AND document_id = ?',
-    [collectionId, documentId]
-  );
+  db
+  .prepare(
+    'DELETE FROM collection_documents WHERE collection_id = ? AND document_id = ?'
+  )
+  .run(collectionId, documentId);
 }
 
-/**
- * Get documents in a collection
- */
-export function getCollectionDocuments(collectionId: string): Document[] {
-  const result = db.exec(`
-    SELECT d.* FROM documents d
-    INNER JOIN collection_documents cd ON d.id = cd.document_id
-    WHERE cd.collection_id = ?
-    ORDER BY cd.position ASC, cd.added_at DESC
-  `, [collectionId]);
-  
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as Document;
-  });
+export function getCollectionDocuments(collectionId: string): DocumentRow[] {
+  return db
+    .prepare(`
+      SELECT d.* FROM documents d
+      INNER JOIN collection_documents cd ON d.id = cd.document_id
+      WHERE cd.collection_id = ?
+      ORDER BY cd.position ASC, cd.added_at DESC
+    `)
+    .all(collectionId) as DocumentRow[];
 }
 
-/**
- * Get collections containing a document
- */
 export function getDocumentCollections(documentId: string): Collection[] {
-  const result = db.exec(`
-    SELECT c.* FROM collections c
-    INNER JOIN collection_documents cd ON c.id = cd.collection_id
-    WHERE cd.document_id = ?
-    ORDER BY c.name ASC
-  `, [documentId]);
-  
-  if (result.length === 0) return [];
-
-  const columns = result[0].columns;
-  return result[0].values.map(row => {
-    const obj: any = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj as Collection;
-  });
+  return db
+    .prepare(`
+      SELECT c.* FROM collections c
+      INNER JOIN collection_documents cd ON c.id = cd.collection_id
+      WHERE cd.document_id = ?
+      ORDER BY c.name ASC
+    `)
+    .all(documentId) as Collection[];
 }
 
-/**
- * Get collection statistics
- */
 export function getCollectionStats(collectionId: string): {
   documentCount: number;
   totalWords: number;
   lastUpdated: number | null;
 } {
-  const countResult = db.exec(
-    'SELECT COUNT(*) as count FROM collection_documents WHERE collection_id = ?',
-    [collectionId]
-  );
+  const countRow = db
+    .prepare(
+      'SELECT COUNT(*) as count FROM collection_documents WHERE collection_id = ?'
+    )
+    .get(collectionId) as { count: number } | undefined;
 
-  const wordsResult = db.exec(`
-    SELECT SUM(d.word_count) as total_words, MAX(cd.added_at) as last_updated
-    FROM documents d
-    INNER JOIN collection_documents cd ON d.id = cd.document_id
-    WHERE cd.collection_id = ?
-  `, [collectionId]);
-
-  const documentCount = countResult[0]?.values[0]?.[0] as number || 0;
-  const totalWords = wordsResult[0]?.values[0]?.[0] as number || 0;
-  const lastUpdated = wordsResult[0]?.values[0]?.[1] as number || null;
+  const wordsRow = db
+    .prepare(`
+      SELECT 
+        SUM(d.word_count) as total_words, 
+        MAX(cd.added_at) as last_updated
+      FROM documents d
+      INNER JOIN collection_documents cd ON d.id = cd.document_id
+      WHERE cd.collection_id = ?
+    `)
+    .get(collectionId) as
+      | { total_words: number | null; last_updated: number | null }
+      | undefined;
 
   return {
-    documentCount,
-    totalWords,
-    lastUpdated,
+    documentCount: countRow?.count ?? 0,
+    totalWords: wordsRow?.total_words ?? 0,
+    lastUpdated: wordsRow?.last_updated ?? null,
   };
 }
 
 export function insertHighlight(data: InsertHighlightData): void {
-  db.run(
-    `INSERT INTO highlights (id, document_id, text, color, position_start, position_end, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      data.id,
-      data.document_id,
-      data.text,
-      data.color || 'yellow',
-      data.position_start,
-      data.position_end,
-      Date.now(),
-    ]
+  db
+  .prepare(`
+    INSERT INTO highlights 
+    (id, document_id, text, color, position_start, position_end, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+  .run(
+    data.id,
+    data.document_id,
+    data.text,
+    data.color ?? 'yellow',
+    data.position_start,
+    data.position_end,
+    Date.now()
   );
-  saveDatabase();
+
+saveDatabase();
 }
 
-export function getHighlightsByDocumentId(documentId: string): HighlightRow[] {
-  const result = db.exec(
-    'SELECT * FROM highlights WHERE document_id = ? ORDER BY position_start ASC',
-    [documentId]
-  );
-
-  if (result.length === 0) return [];
-
-  return result[0].values.map((row) => {
-    const obj: any = {};
-    result[0].columns.forEach((col, i) => {
-      obj[col] = row[i];
-    });
-    return obj as HighlightRow;
-  });
+export function getHighlightsByDocumentId(
+  documentId: string
+): HighlightRow[] {
+  return db
+    .prepare(
+      'SELECT * FROM highlights WHERE document_id = ? ORDER BY position_start ASC'
+    )
+    .all(documentId) as HighlightRow[];
 }
 
 export function deleteHighlight(id: string): void {
-  db.run('DELETE FROM highlights WHERE id = ?', [id]);
-  saveDatabase();
-}
+  db
+    .prepare('DELETE FROM highlights WHERE id = ?')
+    .run(id);
 
+saveDatabase();
+}
 // ==================== NOTES OPERATIONS ====================
 
 export interface NoteRow {
@@ -2230,42 +1988,45 @@ export interface InsertNoteData {
 }
 
 export function insertNote(data: InsertNoteData): void {
-  db.run(
-    `INSERT INTO notes (id, document_id, content, highlight_id, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-    [data.id, data.document_id, data.content, data.highlight_id || null, Date.now()]
+  db
+  .prepare(`
+    INSERT INTO notes (id, document_id, content, highlight_id, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  .run(
+    data.id,
+    data.document_id,
+    data.content,
+    data.highlight_id ?? null,
+    Date.now()
   );
-  saveDatabase();
+
+saveDatabase();
 }
 
-export function getNotesByDocumentId(documentId: string): NoteRow[] {
-  const result = db.exec(
-    'SELECT * FROM notes WHERE document_id = ? ORDER BY created_at DESC',
-    [documentId]
-  );
-
-  if (result.length === 0) return [];
-
-  return result[0].values.map((row) => {
-    const obj: any = {};
-    result[0].columns.forEach((col, i) => {
-      obj[col] = row[i];
-    });
-    return obj as NoteRow;
-  });
+export function getNotesByDocumentId(
+  documentId: string
+): NoteRow[] {
+  return db
+    .prepare(
+      'SELECT * FROM notes WHERE document_id = ? ORDER BY created_at DESC'
+    )
+    .all(documentId) as NoteRow[];
 }
 
 export function updateNote(id: string, content: string): void {
-  db.run('UPDATE notes SET content = ?, updated_at = ? WHERE id = ?', [
-    content,
-    Date.now(),
-    id,
-  ]);
+  db
+    .prepare('UPDATE notes SET content = ?, updated_at = ? WHERE id = ?')
+    .run(content, Date.now(), id);
+
   saveDatabase();
 }
 
 export function deleteNote(id: string): void {
-  db.run('DELETE FROM notes WHERE id = ?', [id]);
+  db
+    .prepare('DELETE FROM notes WHERE id = ?')
+    .run(id);
+
   saveDatabase();
 }
 
@@ -2287,46 +2048,44 @@ export interface InsertEntityData {
 }
 
 export function insertEntity(data: InsertEntityData): void {
-  db.run(
-    `INSERT OR IGNORE INTO entities (id, name, type, frequency, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-    [data.id, data.name, data.type, data.frequency || 1, Date.now()]
+  db
+  .prepare(`
+    INSERT OR IGNORE INTO entities (id, name, type, frequency, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  .run(
+    data.id,
+    data.name,
+    data.type,
+    data.frequency ?? 1,
+    Date.now()
   );
-  saveDatabase();
+
+saveDatabase();
 }
 
 export function getEntityByName(name: string): EntityRow | null {
-  const result = db.exec('SELECT * FROM entities WHERE LOWER(name) = LOWER(?)', [name]);
-  if (result.length === 0 || result[0].values.length === 0) return null;
+  const row = db
+    .prepare('SELECT * FROM entities WHERE LOWER(name) = LOWER(?)')
+    .get(name) as EntityRow | undefined;
 
-  const row = result[0].values[0];
-  const obj: any = {};
-  result[0].columns.forEach((col, i) => {
-    obj[col] = row[i];
-  });
-  return obj as EntityRow;
+  return row ?? null;
 }
 
 export function getAllEntities(limit: number = 1000): EntityRow[] {
-  const result = db.exec(
-    `SELECT * FROM entities ORDER BY frequency DESC LIMIT ?`,
-    [limit]
-  );
-
-  if (result.length === 0) return [];
-
-  return result[0].values.map((row) => {
-    const obj: any = {};
-    result[0].columns.forEach((col, i) => {
-      obj[col] = row[i];
-    });
-    return obj as EntityRow;
-  });
+  return db
+    .prepare(
+      `SELECT * FROM entities ORDER BY frequency DESC LIMIT ?`
+    )
+    .all(limit) as EntityRow[];
 }
 
 export function incrementEntityFrequency(entityId: string): void {
-  db.run('UPDATE entities SET frequency = frequency + 1 WHERE id = ?', [entityId]);
-  saveDatabase();
+  db
+  .prepare('UPDATE entities SET frequency = frequency + 1 WHERE id = ?')
+  .run(entityId);
+
+saveDatabase();
 }
 
 // ==================== DOCUMENT-ENTITY RELATIONSHIPS ====================
@@ -2349,53 +2108,38 @@ export interface InsertDocumentEntityData {
 }
 
 export function insertDocumentEntity(data: InsertDocumentEntityData): void {
-  db.run(
-    `INSERT OR REPLACE INTO document_entities (id, document_id, entity_id, frequency, context, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      data.id,
-      data.document_id,
-      data.entity_id,
-      data.frequency || 1,
-      data.context || null,
-      Date.now(),
-    ]
+  db
+  .prepare(`
+    INSERT OR REPLACE INTO document_entities 
+    (id, document_id, entity_id, frequency, context, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  .run(
+    data.id,
+    data.document_id,
+    data.entity_id,
+    data.frequency ?? 1,
+    data.context ?? null,
+    Date.now()
   );
-  saveDatabase();
+
+saveDatabase();
 }
 
 export function getDocumentEntities(documentId: string): DocumentEntityRow[] {
-  const result = db.exec(
-    'SELECT * FROM document_entities WHERE document_id = ? ORDER BY frequency DESC',
-    [documentId]
-  );
-
-  if (result.length === 0) return [];
-
-  return result[0].values.map((row) => {
-    const obj: any = {};
-    result[0].columns.forEach((col, i) => {
-      obj[col] = row[i];
-    });
-    return obj as DocumentEntityRow;
-  });
+  return db
+    .prepare(
+      'SELECT * FROM document_entities WHERE document_id = ? ORDER BY frequency DESC'
+    )
+    .all(documentId) as DocumentEntityRow[];
 }
 
 export function getEntityDocuments(entityId: string): DocumentEntityRow[] {
-  const result = db.exec(
-    'SELECT * FROM document_entities WHERE entity_id = ? ORDER BY frequency DESC',
-    [entityId]
-  );
-
-  if (result.length === 0) return [];
-
-  return result[0].values.map((row) => {
-    const obj: any = {};
-    result[0].columns.forEach((col, i) => {
-      obj[col] = row[i];
-    });
-    return obj as DocumentEntityRow;
-  });
+  return db
+    .prepare(
+      'SELECT * FROM document_entities WHERE entity_id = ? ORDER BY frequency DESC'
+    )
+    .all(entityId) as DocumentEntityRow[];
 }
 
 // ==================== ENTITY RELATIONSHIPS ====================
@@ -2418,58 +2162,43 @@ export interface InsertEntityRelationshipData {
 }
 
 export function insertEntityRelationship(data: InsertEntityRelationshipData): void {
-  db.run(
-    `INSERT OR REPLACE INTO entity_relationships (id, entity_a_id, entity_b_id, relationship_type, strength, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      data.id,
-      data.entity_a_id,
-      data.entity_b_id,
-      data.relationship_type || 'related_to',
-      data.strength || 0.5,
-      Date.now(),
-    ]
+  db
+  .prepare(`
+    INSERT OR REPLACE INTO entity_relationships 
+    (id, entity_a_id, entity_b_id, relationship_type, strength, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  .run(
+    data.id,
+    data.entity_a_id,
+    data.entity_b_id,
+    data.relationship_type ?? 'related_to',
+    data.strength ?? 0.5,
+    Date.now()
   );
-  saveDatabase();
+
+saveDatabase();
 }
 
 export function getEntityRelationships(entityId: string): EntityRelationshipRow[] {
-  const result = db.exec(
-    `SELECT * FROM entity_relationships 
-     WHERE entity_a_id = ? OR entity_b_id = ?
-     ORDER BY strength DESC`,
-    [entityId, entityId]
-  );
-
-  if (result.length === 0) return [];
-
-  return result[0].values.map((row) => {
-    const obj: any = {};
-    result[0].columns.forEach((col, i) => {
-      obj[col] = row[i];
-    });
-    return obj as EntityRelationshipRow;
-  });
+  return db
+    .prepare(`
+      SELECT * FROM entity_relationships 
+      WHERE entity_a_id = ? OR entity_b_id = ?
+      ORDER BY strength DESC
+    `)
+    .all(entityId, entityId) as EntityRelationshipRow[];
 }
 
 export function getAllEntityRelationships(limit: number = 1000): EntityRelationshipRow[] {
-  const result = db.exec(
-    `SELECT * FROM entity_relationships ORDER BY strength DESC LIMIT ?`,
-    [limit]
-  );
-
-  if (result.length === 0) return [];
-
-  return result[0].values.map((row) => {
-    const obj: any = {};
-    result[0].columns.forEach((col, i) => {
-      obj[col] = row[i];
-    });
-    return obj as EntityRelationshipRow;
-  });
+  return db
+    .prepare(
+      `SELECT * FROM entity_relationships ORDER BY strength DESC LIMIT ?`
+    )
+    .all(limit) as EntityRelationshipRow[];
 }
 
-// Update exports
+export { db };
 export default {
   insertDocument,
   updateDocument,

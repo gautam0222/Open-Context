@@ -15,6 +15,7 @@
     "@mozilla/readability": "^0.6.0",
     "@open-context/shared": "*",
     "@types/jsdom": "^27.0.0",
+    "better-sqlite3": "^12.6.2",
     "compromise": "^14.14.5",
     "cors": "^2.8.5",
     "dotenv": "^16.4.1",
@@ -30,6 +31,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/multer": "^2.0.0",
