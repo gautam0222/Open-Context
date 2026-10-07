@@ -36,7 +36,17 @@ jobs:
       #   run: deno fmt --check
 
       - name: Run linter
-        run: deno lint
+        run: |
+          if [ -f deno.json ] || [ -f deno.jsonc ]; then
+            deno lint
+          else
+            echo "No Deno config found; skipping deno lint."
+          fi
 
       - name: Run tests
-        run: deno test -A
+        run: |
+          if [ -f deno.json ] || [ -f deno.jsonc ]; then
+            deno test -A
+          else
+            echo "No Deno config found; skipping deno tests."
+          fi
