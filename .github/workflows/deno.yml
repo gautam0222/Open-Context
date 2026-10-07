@@ -1,12 +1,4 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
-# This workflow will install Deno then run `deno lint` and `deno test`.
-# For more information see: https://github.com/denoland/setup-deno
-
-name: Deno
+name: Node CI
 
 on:
   push:
@@ -25,28 +17,23 @@ jobs:
       - name: Setup repo
         uses: actions/checkout@v4
 
-      - name: Setup Deno
-        # uses: denoland/setup-deno@v1
-        uses: denoland/setup-deno@61fe2df320078202e33d7d5ad347e7dcfa0e8f31  # v1.1.2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          deno-version: v1.x
+          node-version: 20
+          cache: npm
 
-      # Uncomment this step to verify the use of 'deno fmt' on each commit.
-      # - name: Verify formatting
-      #   run: deno fmt --check
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Run linter
+      - name: Build shared package
         run: |
-          if [ -f deno.json ] || [ -f deno.jsonc ]; then
-            deno lint
-          else
-            echo "No Deno config found; skipping deno lint."
-          fi
+          npm run build -w shared
 
-      - name: Run tests
+      - name: Build extension package
         run: |
-          if [ -f deno.json ] || [ -f deno.jsonc ]; then
-            deno test -A
-          else
-            echo "No Deno config found; skipping deno tests."
-          fi
+          npm run build -w extension
+
+      - name: Build server package
+        run: |
+          npm run build -w server
