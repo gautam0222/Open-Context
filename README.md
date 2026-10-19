@@ -68,6 +68,17 @@ open-context/
 - **Lint code**: `npm run lint`
 - **Build all**: `npm run build:all`
 
+## 🧪 Verify the Setup
+
+Run these checks before opening a pull request or committing a larger change:
+
+```bash
+npm run lint
+npm run build:all
+```
+
+If you are working on the Python NLP scripts, create and activate the virtual environment described in [`scripts/README.md`](./scripts/README.md) before installing Python dependencies.
+
 ## 📝 Roadmap
 
 - [x] Phase 0: Foundation Setup
