@@ -107,3 +107,5 @@ MIT License - See LICENSE file for details
 ---
 
 Built with ❤️ by Gautam Sukhani
+
+> Documentation refreshed on October 21, 2026.
